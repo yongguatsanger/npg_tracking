@@ -8,7 +8,7 @@ my $available = eval "require $driver_package";
 if (!$available) {
   plan skip_all => "$driver_package is not deployed or cannot be loaded";
 } else {
-  plan tests => 4;
+  plan tests => 6;
 
   use_ok('st::api::lims');
 
@@ -48,7 +48,7 @@ if (!$available) {
   };
 
   subtest 'family tree, product table entries are present' => sub {
-    plan tests => 29;
+    plan tests => 31;
     
     my $id_run = 15440;
     my $l = st::api::lims->new(
@@ -73,6 +73,8 @@ if (!$available) {
       is($plex->tag_index, $tag_index, "tag index is $tag_index");
       is($plex->position, $count, "plex position is $count");
       is($plex->id_run, $id_run, 'id_run is propagated');
+      is($plex->gbs_plex_name, undef, 'gbs_plex_name is undefined');
+
       is(join(q[ ],
         map {join q[:], $_->tag_index, defined $_->qc_state ? $_->qc_state : q[undef]}
              @plexes),
@@ -106,6 +108,59 @@ if (!$available) {
                mlwh_schema      => $schema_wh);
       is($plex->qc_state, $qc_value,
         'qc state for directly constructed plex-level object');
+    }
+  };
+
+  subtest 'gbs plex name' => sub {
+    plan tests => 7;
+
+    my $id_run = 24135;
+    my $l= st::api::lims->new(
+              id_flowcell_lims => 57543,
+              driver_type      => 'ml_warehouse',
+              mlwh_schema      => $schema_wh);
+    is($l->id_run, $id_run, 'id_run is propagated');
+
+    is($l->gbs_plex_name, undef, 'gbs_plex_name undefined on a batch level');
+
+    $l = st::api::lims->new(id_flowcell_lims => 57543, position => 1, 
+                            driver_type => 'ml_warehouse', mlwh_schema => $schema_wh);
+    is($l->gbs_plex_name, undef, 'gbs_plex_name undefined on a pool level as mixed');
+
+    $l = st::api::lims->new(id_flowcell_lims => 57543, position => 1, tag_index=> 1, 
+                               driver_type => 'ml_warehouse', mlwh_schema => $schema_wh);
+    is($l->gbs_plex_name, 'Hs_MajorQC', 'gbs_plex_name for a plex');
+
+    $l = st::api::lims->new(id_flowcell_lims => 57543, position => 1, tag_index=> 2, 
+                            driver_type => 'ml_warehouse', mlwh_schema => $schema_wh);
+    is($l->gbs_plex_name, 'Pf_GRC1', 'gbs_plex_name for another plex');
+    $l = st::api::lims->new(id_flowcell_lims => 57543, position => 1, tag_index=> 3,
+                               driver_type => 'ml_warehouse', mlwh_schema => $schema_wh);
+    is($l->gbs_plex_name, 'Pf_GRC2', 'gbs_plex_name for yet another plex');
+
+    $l = st::api::lims->new(id_flowcell_lims => 57543, position => 1, tag_index=> 4,
+                             driver_type => 'ml_warehouse', mlwh_schema => $schema_wh);
+    is($l->gbs_plex_name, undef, 'gbs_plex_name undefined');
+    
+  };
+
+  subtest 'sample controls' => sub {
+    plan tests => 6;
+
+    my $init = {id_flowcell_lims => 57543, position => 1,
+                driver_type => 'ml_warehouse', mlwh_schema => $schema_wh};
+
+    for my $ti ((1,2,3)) {
+      $init->{tag_index} = $ti;
+      my $l = st::api::lims->new($init);
+      if ($ti <= 2 ) {
+        ok($l->sample_is_control, 'sample is control');
+        my $ctype = ($ti == 1) ? 'negative' : 'positive';
+        is($l->sample_control_type, $ctype, 'correct control type');
+      } else {
+        ok(!$l->sample_is_control, 'sample is not control');
+        is($l->sample_control_type, undef, 'sample control type is undefined');
+      }
     }
   };
 }

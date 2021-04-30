@@ -1,200 +1,99 @@
-#########
-# Author:        jo3
-# Created:       19/10/2010
-
 package Monitor::RunFolder;
 
 use Moose;
-use Monitor::SRS::File;
-with 'Monitor::Roles::Cycle';
-with 'Monitor::Roles::Schema';
-with 'Monitor::Roles::Username';
-with 'npg_tracking::illumina::run::short_info';    # id_run
-
 use Carp;
-use English qw(-no_match_vars);
-use Readonly;
+
+extends 'npg_tracking::illumina::runfolder';
+with qw/ Monitor::Roles::Username /;
 
 our $VERSION = '0';
 
-Readonly::Scalar our $ACCEPTABLE_CYCLE_DELAY => 6;
-
-# short_info's documentation says that run_folder will be constrained to the
-# last element of the path, so remember the input.
-has runfolder_path => (
-  is         => 'ro',
-  isa        => 'Str',
-  required   => 1,
-);
-with 'npg_tracking::illumina::run::long_info';   # lane, tile, cycle counts, is_rta
-
-has run_folder => (
-  is         => 'ro',
-  isa        => 'Str',
-  lazy_build => 1,
-);
-sub _build_run_folder {
-  my ($self) = @_;
-  my $path = $self->runfolder_path();
-  return substr $path, 1 + rindex( $path, q{/} );
-}
-
-has run_db_row => (
-  is         => 'ro',
-  isa        => 'Maybe[npg_tracking::Schema::Result::Run]',
-  lazy_build => 1,
-);
-sub _build_run_db_row {
-  my ($self) = @_;
-  my $id     = $self->id_run();
-  my $run_rs = $self->schema->resultset('Run')->find($id);
-  croak "Problem retrieving record for id_run => $id" if !defined $run_rs;
-  return $run_rs;
-}
-
-has file_obj => (
-  is         => 'ro',
-  isa        => 'Monitor::SRS::File',
-  lazy_build => 1,
-);
-
-sub current_run_status_description {
-  my ($self) = @_;
-
-  my $run_status_rs = $self->schema->resultset('RunStatus')->search(
-        {
-          id_run    => $self->id_run(),
-          iscurrent => 1,
-        }
-  );
-
-  croak 'Error getting current run status for run ' . $self->id_run()
-    if $run_status_rs->count() != 1;
-
-  return $run_status_rs->next->run_status_dict->description();
-}
-
-sub current_run_status {
-  my ($self) = @_;
-  carp 'DO NOT USE THIS Monitor::RunFolder::current_run_status METHOD - IMPENDING RETURN VALUE CHANGE';
-  return $self->current_run_status_description();
-}
-
-sub _build_file_obj {
-  my ($self) = @_;
-  return Monitor::SRS::File->new(
-           run_folder     => $self->run_folder(),
-           runfolder_path => $self->runfolder_path(),
-  );
-}
-
-sub check_cycle_count {
-  my ( $self, $latest_cycle, $run_complete ) = @_;
-
-  croak 'Latest cycle count not supplied'   if !defined $latest_cycle;
-  croak 'Run complete Boolean not supplied' if !defined $run_complete;
-
-  my $run_db = $self->run_db_row();
-
-  $latest_cycle
-    && ( $self->current_run_status_description() eq 'run pending' )
-    && $run_db->update_run_status( 'run in progress', $self->username() );
-
-  $run_complete
-    && $run_db->update_run_status( 'run complete', $self->username() );
-
-  ( $latest_cycle > $run_db->actual_cycle_count() )
-    && $run_db->actual_cycle_count($latest_cycle);
-
-  $run_db->update();
-
+sub update_run_status {
+  my ($self, $status_description) = @_;
+  $self->tracking_run()
+       ->update_run_status($status_description, $self->username());
   return;
 }
 
-sub read_long_info {
+sub update_cycle_count {
+  my ($self, $latest_cycle) = @_;
+
+  defined $latest_cycle or croak 'Latest cycle count not supplied';
+  my $actual_cycle = $self->tracking_run()->actual_cycle_count();
+  $actual_cycle ||= 0;
+  if ($latest_cycle > $actual_cycle) {
+    $self->tracking_run()->update({actual_cycle_count => $latest_cycle});
+    return 1;
+  }
+
+  return 0;
+}
+
+sub set_instrument_side {
+  my $self = shift;
+  my $li_iside = $self->instrument_side;
+  if ($li_iside) {
+    my $db_iside = $self->tracking_run()->instrument_side || q[];
+    if ($db_iside ne $li_iside) {
+      my $is_set = $self->tracking_run()
+                        ->set_instrument_side($li_iside, $self->username());
+      if ($is_set) {
+        return $li_iside;
+      }
+    }
+  }
+  return;
+}
+
+sub set_workflow_type {
+  my $self = shift;
+  my $li_wftype = $self->workflow_type;
+  if ($li_wftype) {
+    my $db_wftype = $self->tracking_run()->workflow_type || q[];
+    if ($db_wftype ne $li_wftype) {
+      my $is_set = $self->tracking_run()
+                        ->set_workflow_type($li_wftype, $self->username());
+      if ($is_set) {
+        return $li_wftype;
+      }
+    }
+  }
+  return;
+}
+
+sub set_run_tags {
   my $self = shift;
 
-  my $recipe   = $self->file_obj();
-  my $run_db   = $self->run_db_row();
-  my $username = $self->username();
+  $self->is_paired_read()
+    ? $self->tracking_run()->set_tag( $self->username, 'paired_read' )
+    : $self->tracking_run()->set_tag( $self->username, 'single_read' );
 
-  $recipe->expected_cycle_count();
-
-  # Extract the relevant details.
-  my $expected_cycle_count = $recipe->expected_cycle_count();
-  my $run_is_indexed       = $recipe->is_indexed();
-  my $run_is_paired_read   = $recipe->is_paired_read();
-
-  # Update the expected_cycle_count field and run tags.
-  $run_db->expected_cycle_count( $expected_cycle_count );
-
-  $run_is_paired_read ? $run_db->set_tag( $username, 'paired_read' )
-                      : $run_db->set_tag( $username, 'single_read' );
-
-  $run_is_indexed     ? $run_db->set_tag(   $username, 'multiplex' )
-                      : $run_db->unset_tag( $username, 'multiplex' );
-
-  $run_db->set_tag( $username, 'rta' ); # run is always RTA in year 2015
-
-  $run_db->update();
-
-  $self->_delete_lanes();
+  $self->is_indexed()
+    ? $self->tracking_run()->set_tag( $self->username, 'multiplex' )
+    : $self->tracking_run()->unset_tag( 'multiplex' );
 
   return;
 }
 
-sub check_delay {
-  my ( $self ) = @_;
+sub update_copying_problem_tag {
+  my ($self, $cycle_lag) = @_;
 
-  my @missing_cycles = $self->missing_cycles();
-
-  if ( scalar @missing_cycles ) {
-    carp q{Missing the following cycles: };
-    carp join q{,}, @missing_cycles;
-  }
-
-  my $delay = $self->delay();
-
-  if ( $self->delay() > $ACCEPTABLE_CYCLE_DELAY ) {
-    carp q{Delayed by } . $delay . q{ cycles - this is a potential problem.};
-  }
-
+  my $tag = 'copying_problem';
+  $cycle_lag ? $self->tracking_run()->set_tag($self->username, $tag)
+             : $self->tracking_run()->unset_tag($tag);
   return;
 }
 
-sub delay {
-  my ( $self, $exclude_missing_cycles ) = @_;
-
-  my $run_actual_cycles = $self->run_db_row()->actual_cycle_count();
-
-  my $latest_cycle = $self->get_latest_cycle();
-
-  my $delay = 0;
-
-  if ( $run_actual_cycles != $latest_cycle ) {
-    $delay = $run_actual_cycles - $latest_cycle;
-    $delay =~ s/-//xms;
-  }
-
-  if ( ! $exclude_missing_cycles ) {
-    my @missing_cycles = $self->missing_cycles();
-
-    $delay += scalar @missing_cycles;
-  }
-
-  return $delay;
-}
-
-sub _delete_lanes {
+sub delete_superfluous_lanes {
   my $self = shift;
-  
-  my $run_lanes = $self->run_db_row()->run_lanes;
+
+  my $run_lanes = $self->tracking_run()->run_lanes;
   if ( $self->lane_count && ($self->lane_count < $run_lanes->count()) ) {
     while ( my $lane = $run_lanes->next ) {
       my $position = $lane->position;
       if ($position > $self->lane_count) {
           $lane->delete();
-          warn "Deleted lane $position\n"; 
+          carp "Deleted lane $position\n";
       }
     }
   }
@@ -202,10 +101,37 @@ sub _delete_lanes {
   return;
 }
 
+sub update_run_record {
+  my ($self) = @_;
+
+  my $run_db = $self->tracking_run();
+
+  my $expected_cycle_count = $self->expected_cycle_count();
+  if ( $expected_cycle_count && ( ! $run_db->expected_cycle_count() ||
+                                  ( $run_db->expected_cycle_count() != $expected_cycle_count ) ) ) {
+    carp qq[Updating expected cycle count to $expected_cycle_count];
+    $run_db->expected_cycle_count($expected_cycle_count);
+  }
+
+  if ( ! $run_db->folder_name() ) {
+    my $folder_name = $self->run_folder();
+    carp qq[Setting undefined folder name to $folder_name];
+    $run_db->folder_name($folder_name);
+  }
+
+  my $glob = $self->_get_folder_path_glob;
+  if ( $glob ) {
+    $run_db->folder_path_glob($glob);
+  }
+
+  $run_db->update();
+
+  return;
+}
+
 1;
 
 __END__
-
 
 =head1 NAME
 
@@ -224,48 +150,65 @@ Monitor::RunFolder - provide methods to get run details from a folder path
 =head1 DESCRIPTION
 
 When supplied a path in the constructor the class calls on various roles to
-work out various bits of information about the run. It should work on both an
-FTP url and on a local path, and is called by Monitor::SRS::FTP and
-Monitor::SRS::Local
+work out various bits of information about the run.
 
 Based on these, and supplied arguments, it updates run status, run tags, etc.
 for the run, creating a DBIx record object to do that.
 
 =head1 SUBROUTINES/METHODS
 
-Most of the methods are provided by npg_tracking::illumina::run::short_info.
+=head2 update_cycle_count
 
-=head2 current_run_status_description
+If necessary, updates actual run cycle count. If the count has not advanced
+compared to the database record, the record not updated. Returns true if the
+cycle count has been updated, false otherwise.
 
-Return the current status of the object's run.
+  $folder->update_cycle_count(3);
 
-=head2 current_run_status
+=head2 update_run_status
 
-Return the current status (description now, object in future) of the object's run.
+Updates run status.
 
-=head2 check_cycle_count
+  $folder->update_run_status('run in progress');
 
-When passed the lastest cycle count and a boolean indicating whether the run
-is complete or not, make appropriate adjustments to the database entries for
-the run status and actual cycle count.
+=head2 set_instrument_side
 
-=head2 read_long_info
+Retrieves instrument side from {r|R}unParamaters.xml file and sets
+a relevant run tag if the tag is not yet set or does not match the
+value in the parameters file.
 
-Use long_info to find various attributes and update run tags with the results.
-The method accepts a Boolean argument indicating whether the run is RTA.
+Returns the instrument side string if it has been changed, an undefined
+value otherwise.
 
-=head2 check_delay
+=head2 set_workflow_type
 
-Looks at the runfolder and sees if there are any missing cycles, and reports these,
-and if the difference between the actual last cycle recorded in the database and the
-highest cycle found in the runfolder on staging is greater than $ACCEPTABLE_CYCLE_DELAY
-then it will report this.
+Retrieves workflow from {r|R}unParamaters.xml file and sets
+a relevant run tag if the tag is not yest set or does not match the
+value in the parameters file.
 
-=head2 delay
+Returns the workflow type string if it has been changed, an undefined
+value otherwise.
 
-The number of cycles that are delayed coming across from the instrument
+=head2 set_run_tags
 
-  actual last cycle recorded - higest cycle found on staging
+Sets multiplex, paired or single read tags as appropriate.
+
+=head2 update_copying_problem_tag
+
+Sets or unset copying_problem tag depending on the methods argument.
+
+  $folder->update_copying_problem_tag(1); # sets tag
+  $folder->update_copying_problem_tag(0); # unsets tag
+  $folder->update_copying_problem_tag();  # unsets tag
+
+=head2 delete_superfluous_lanes
+
+Deletes database run_lane table records for lanes not present in a run folder.
+
+=head2 update_run_record
+
+Ensures DB has updated runfolder name and a suitable glob for quickly
+finding the run folder. Updates extected cycle count value if needed.
 
 =head1 CONFIGURATION AND ENVIRONMENT
 
@@ -277,16 +220,9 @@ The number of cycles that are delayed coming across from the instrument
 
 =item Carp
 
-=item English
-
-=item Readonly
-
 =back
 
-
-
 =head1 INCOMPATIBILITIES
-
 
 =head1 BUGS AND LIMITATIONS
 
@@ -294,11 +230,17 @@ Please inform the author of any found.
 
 =head1 AUTHOR
 
-John O'Brien, E<lt>jo3@sanger.ac.ukE<gt>
+=over
+
+=item John O'Brien
+
+=item Marina Gourtovaia
+
+=back
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2010 GRL, by John O'Brien
+Copyright (C) 2013,2014,2015,2018,2019,2020 Genome Research Ltd.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

@@ -1,12 +1,11 @@
 use strict;
 use warnings;
-
-use Test::More tests => 25;
+use Test::More tests => 30;
 use Test::Exception;
 use Test::Warn;
 use File::Temp qw/ tempdir /;
 
-my $num_delegated_methods = 45;
+my $num_delegated_methods = 48;
 
 local $ENV{'http_proxy'} = 'http://wibble.com';
 
@@ -17,6 +16,7 @@ subtest 'Class methods' => sub {
 
   is(st::api::lims->cached_samplesheet_var_name, 'NPG_CACHED_SAMPLESHEET_FILE',
     'correct name of the cached samplesheet env var');
+
   is(scalar st::api::lims->driver_method_list(), $num_delegated_methods, 'driver method list length');
   is(scalar st::api::lims::driver_method_list_short(), $num_delegated_methods, 'short driver method list length');
   is(scalar st::api::lims->driver_method_list_short(), $num_delegated_methods, 'short driver method list length');
@@ -126,18 +126,7 @@ my @accessions_6551_1 = qw/ERS024591 ERS024592 ERS024593 ERS024594 ERS024595 ERS
 my @studies_6551_1 = ('Illumina Controls','Discovery of sequence diversity in Shigella sp.');
 
 subtest 'Driver type and driver build' => sub {
-  plan tests => 6;
-
-  local $ENV{NPG_WEBSERVICE_CACHE_DIR} = 't/data/st_api_lims_new';
-
-  use_ok('st::api::lims::samplesheet');
-  lives_and( sub{
-    my $lims = st::api::lims->new(id_run => 6551,
-                                  driver => st::api::lims::samplesheet->new(
-                                    id_run => 6551,
-                                    path => $ENV{NPG_WEBSERVICE_CACHE_DIR}));
-    is($lims->driver_type, 'samplesheet');
-  }, 'obtain driver type from driver if driver given');
+  plan tests => 7;
 
   throws_ok { st::api::lims->new(id_run => 6551, driver_type => 'some') }
     qr/Can\'t locate st\/api\/lims\/some\.pm in \@INC/,
@@ -147,8 +136,19 @@ subtest 'Driver type and driver build' => sub {
     'st::api::lims::xml');
   local $ENV{NPG_WEBSERVICE_CACHE_DIR} = q[];
   isa_ok (st::api::lims->new(id_run => 6551)->driver(), 'st::api::lims::xml');
+  
   local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/samplesheet/miseq_default.csv';
-  isa_ok (st::api::lims->new(id_run => 6551)->driver(), 'st::api::lims::samplesheet');
+  my $l = st::api::lims->new(id_run => 6551);
+  is($l->driver_type, 'samplesheet');
+  isa_ok ($l->driver(), 'st::api::lims::samplesheet');
+
+  use_ok('st::api::lims::samplesheet');
+  $l = st::api::lims->new(id_run => 6551,
+                          driver => st::api::lims::samplesheet->new(
+                            id_run => 6551,
+                            path   => $ENV{NPG_CACHED_SAMPLESHEET_FILE}));
+  is($l->driver_type, 'samplesheet',
+    'obtain driver type from the driver object if given');
 };
 
 subtest 'Run-level object' => sub {
@@ -178,7 +178,7 @@ subtest 'Run-level object' => sub {
 };
 
 subtest 'Lane-level object' => sub {
-  plan tests => 101;
+  plan tests => 103;
 
   my @lims_list = ();
   push @lims_list, st::api::lims->new(id_run => 6551, position => 1);
@@ -216,6 +216,7 @@ subtest 'Lane-level object' => sub {
     is($lims->sample_supplier_name, undef, 'supplier sample name undefined');
     is($lims->sample_cohort, undef, 'supplier sample cohort undefined');
     is($lims->sample_donor_id, undef, 'supplier sample donor id undefined');
+    ok($lims->study_alignments_in_bam, 'alignment_in_bam is true');
 
     my $plexes_hash = $lims->children_ia();
     my $k1 = $lims->rpt_list ? '6551:1:1' : 1;
@@ -432,7 +433,7 @@ subtest 'Object for a tag' => sub {
 };
 
 subtest 'Object for a non-pool lane' => sub {
-  plan tests => 96;
+  plan tests => 99;
 
   my $lims = st::api::lims->new(id_run => 6607, position => 1);
   isa_ok($lims, 'st::api::lims');
@@ -721,14 +722,16 @@ subtest 'Run-level object via samplesheet driver' => sub {
   is ($lanes[0]->id_run, 10000, 'lane id_run as set, differs from Experiment Name');
 
   $ss = st::api::lims->new(path => $path, driver_type => 'samplesheet');
-  is ($ss->is_pool, 0, 'is_pool false on run level');
+  my $is_pool;
+  warning_is { $is_pool = $ss->is_pool }
+    q[id_run is set to Experiment Name, 10262],
+    'warning when setting id_run from Experiment Name';
+  is ($is_pool, 0, 'is_pool false on run level');
   is ($ss->is_control, undef, 'is_control undef on run level');
   is ($ss->library_id, undef, 'library_id undef on run level');
   is ($ss->library_name, undef, 'library_name undef on run level');
-  is ($ss->id_run, undef, 'id_run undefined');
-  warning_is {@lanes = $ss->children}
-    q[id_run is set to Experiment Name, 10262],
-    'can get lane-level objects, get warning about setting id_run from Experiment Name';
+  is ($ss->id_run, 10262, 'id_run undefined');
+  @lanes = $ss->children;
   is (scalar @lanes, 1, 'one lane returned');
   my $lane = $lanes[0];
   is ($lane->position, 1, 'position is 1');
@@ -816,20 +819,13 @@ subtest 'Plex-level object via samplesheet driver' => sub {
   is (scalar $ss->children, 0, 'zero children returned');
 };
 
-subtest 'Samplesheet driver for a composition' => sub {
-  plan tests => 28;
+subtest 'Samplesheet driver for a one-component composition' => sub {
+  plan tests => 26;
 
   my $path = 't/data/samplesheet/miseq_default.csv';
   local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = $path;
 
-  my $ss;
-  lives_ok { $ss = st::api::lims->new(rpt_list => '10262:1:3;2:3:4', path => $path) }
-    'no error instantiation an object for a composition';
-  throws_ok { $ss->children }
-    qr/Cannot use samplesheet driver with components from multiple runs/,
-   'error when components belong to different runs';
-
-  $ss=st::api::lims->new(rpt_list => '10262:1:3', driver_type => 'samplesheet');
+  my $ss=st::api::lims->new(rpt_list => '10262:1:3', driver_type => 'samplesheet');
   is ($ss->driver, undef, 'driver undefined');
   is ($ss->path, undef, 'samplesheet path is undefined');
   is ($ss->rpt_list, '10262:1:3', 'rpt list as given');
@@ -859,8 +855,67 @@ subtest 'Samplesheet driver for a composition' => sub {
   is (scalar $ss->children, 0, 'zero children returned');
 };
 
+subtest 'Samplesheet driver for arbitrary compositions' => sub {
+  plan tests => 69;
+
+  my $path = 't/data/samplesheet/novaseq_multirun.csv';
+  local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = $path;
+  my $rpt_list = '26480:1:9;26480:2:9;26480:3:9;26480:4:9;28780:2:4';
+
+  my $ss=st::api::lims->new(rpt_list => $rpt_list);
+  is ($ss->rpt_list, $rpt_list, 'rpt list as given');
+  is ($ss->id_run, undef, 'run id undefined');
+  is ($ss->position, undef, 'position undefined');
+  is ($ss->tag_index, undef, 'tag_index undefined');
+  ok (!$ss->is_pool, 'not a pool');
+  is ($ss->is_composition, 1, 'this is a composition');
+  my @children = $ss->children();
+  is (scalar @children, 5, 'five children');
+
+  foreach my $o ((@children, $ss)) {
+    is($o->default_tag_sequence, 'AGTTCAGG', 'tag sequence');
+    is($o->default_tagtwo_sequence, 'CCAACAGA', 'tag2 sequence');
+    is($o->default_library_type, 'HiSeqX PCR free', 'library type');
+    is($o->sample_name, '7592352', 'sample name');
+    is($o->study_name, 'UK Study', 'study name');
+    is($o->library_name, '22802061', 'library name');
+    is($o->reference_genome, 'Homo_sapiens (GRCh38_15_plus_hs38d1) [minimap2]',
+      'reference genome');
+  }
+
+  $ss = $children[0];
+  ok ($ss->driver && (ref $ss->driver eq 'st::api::lims::samplesheet'), 'correct driver');
+  is ($ss->driver_type, 'samplesheet', 'driver type is samplesheet');
+  is ($ss->rpt_list, undef, 'rpt list is undefined');
+  is ($ss->id_run, 26480, 'correct run id');
+  is ($ss->position, 1, 'correct position');
+  is ($ss->tag_index, 9, 'correct tag_index');
+  ok (!$ss->is_pool, 'plex is not a pool');
+  is ($ss->is_composition, 0, 'not a composition');
+
+  $ss = $children[1];
+  is ($ss->id_run, 26480, 'correct run id');
+  is ($ss->position, 2, 'correct position');
+  is ($ss->tag_index, 9, 'correct tag_index');
+
+  $ss = $children[2];
+  is ($ss->id_run, 26480, 'correct run id');
+  is ($ss->position, 3, 'correct position');
+  is ($ss->tag_index, 9, 'correct tag_index');
+
+  $ss = $children[3];
+  is ($ss->id_run, 26480, 'correct run id');
+  is ($ss->position, 4, 'correct position');
+  is ($ss->tag_index, 9, 'correct tag_index');
+
+  $ss = $children[4];
+  is ($ss->id_run, 28780, 'correct run id');
+  is ($ss->position, 2, 'correct position');
+  is ($ss->tag_index, 4, 'correct tag_index');
+};
+
 subtest 'Instantiating a samplesheet driver' => sub {
-  plan tests => 15;
+  plan tests => 16;
 
   my $ss_path = 't/data/samplesheet/miseq_default.csv';
   local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = $ss_path;
@@ -873,21 +928,22 @@ subtest 'Instantiating a samplesheet driver' => sub {
   is ($l->driver->path, $ss_path, 'correct path assigned to the driver object');
 
   local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/samplesheet';
+  ok (-d $ENV{NPG_CACHED_SAMPLESHEET_FILE});
   lives_ok {$l = st::api::lims->new(id_run => 10262,)}
     'no error creating an object with samplesheet file defined in env var';
   is ($l->driver_type, 'samplesheet', 'driver type is samplesheet');
-  ok ($l->path, 'path is built');
-  throws_ok {$l->children}
-    qr/Is a directory/,
-    'directory given as a samplesheet file path - error';
+  throws_ok { $l->path }
+    qr/Attribute \(path\) does not pass the type constraint/,
+    'samplesheet cannot be a directory';
 
   local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/samplesheet/non-existing';
+  ok (not -e $ENV{NPG_CACHED_SAMPLESHEET_FILE});
   lives_ok {$l = st::api::lims->new(id_run => 10262,)}
     'no error creating an object with samplesheet file defined in env var';
   is ($l->driver_type, 'samplesheet', 'driver type is samplesheet');
   throws_ok {$l->children}
     qr/Attribute \(path\) does not pass the type constraint/,
-    'directory given as a samplesheet file path - error';
+    'samplesheet file should exist';
 
   local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/samplesheet/non-existing';
   lives_ok {$l = st::api::lims->new(id_run => 10262, path => $ss_path)}
@@ -933,5 +989,261 @@ sub _test_di {
   is($plex->tag_sequence, 'GTCTTGGCGGGGGGGG', 'combined tag sequence');
   is($plex->purpose, 'standard', 'purpose');
 }
+
+subtest 'aggregation across lanes for pools' => sub {
+  plan tests => 85;
+  
+  local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/test40_lims/samplesheet_novaseq4lanes.csv';
+
+  my $l = st::api::lims->new(rpt_list => '25846:1:3');
+  throws_ok { $l->aggregate_xlanes() } qr/Not run-level object/,
+    'method cannot be run for a composition';
+  $l = st::api::lims->new(id_run => 25846, position => 1);
+  throws_ok { $l->aggregate_xlanes() } qr/Not run-level object/,
+    'method cannot be run for a lane-level object';
+  $l = st::api::lims->new(id_run => 25846, position => 1, tag_index => 4);
+  throws_ok { $l->aggregate_xlanes() } qr/Not run-level object/,
+    'method cannot be run for a plex-level object';
+
+  $l = st::api::lims->new(id_run => 25846);
+  
+  throws_ok { $l->aggregate_xlanes(qw/2 10/) }
+    qr/Requested position 10 does not exists in /,
+    'error if requested position does not exist';
+
+  my @merged = $l->aggregate_xlanes();
+  is (scalar @merged, 23, 'number of aggregates is number of tags plus two');
+  my $tag_zero = pop @merged;
+  my $tag_spiked = pop @merged;
+  my $tag_last = pop @merged;
+  my $tag_first = shift @merged;
+  is ($tag_zero->rpt_list, '25846:1:0;25846:2:0;25846:3:0;25846:4:0',
+    'rpt list for tag zero object');
+  is ($tag_spiked->rpt_list, '25846:1:888;25846:2:888;25846:3:888;25846:4:888',
+    'rpt list for spiked in tag object');
+  is ($tag_last->rpt_list, '25846:1:21;25846:2:21;25846:3:21;25846:4:21',
+    'rpt list for tag 21 object');
+  is ($tag_first->rpt_list, '25846:1:1;25846:2:1;25846:3:1;25846:4:1',
+    'rpt list for tag 1 object');
+
+  @merged = $l->aggregate_xlanes(qw/1 4/);
+  is (scalar @merged, 23, 'number of aggregates is number of tags plus two');
+  $tag_zero = pop @merged;
+  $tag_spiked = pop @merged;
+  $tag_last = pop @merged;
+  $tag_first = shift @merged;
+  is ($tag_zero->rpt_list, '25846:1:0;25846:4:0',
+    'rpt list for tag zero object');
+  is ($tag_spiked->rpt_list, '25846:1:888;25846:4:888',
+    'rpt list for spiked in tag object');
+  is ($tag_last->rpt_list, '25846:1:21;25846:4:21',
+    'rpt list for tag 21 object');
+  is ($tag_first->rpt_list, '25846:1:1;25846:4:1',
+    'rpt list for tag 1 object');
+
+  @merged = $l->aggregate_xlanes(qw/1/);
+  is (scalar @merged, 23, 'number of aggregates is number of tags plus two');
+  $tag_zero = pop @merged;
+  $tag_spiked = pop @merged;
+  $tag_last = pop @merged;
+  $tag_first = shift @merged;
+  is ($tag_zero->rpt_list, '25846:1:0', 'rpt list for tag zero object');
+  is ($tag_spiked->rpt_list, '25846:1:888', 'rpt list for spiked in tag object');
+  is ($tag_last->rpt_list, '25846:1:21', 'rpt list for tag 21 object');
+  is ($tag_first->rpt_list, '25846:1:1', 'rpt list for tag 1 object');
+
+  @merged = $l->aggregate_xlanes();
+  is (scalar @merged, 23, 'number of aggregates is number of tags plus two');
+  $tag_zero = pop @merged;
+  $tag_spiked = pop @merged;
+  $tag_last = pop @merged;
+  $tag_first = shift @merged;
+  is ($tag_zero->rpt_list, '25846:1:0;25846:2:0;25846:3:0;25846:4:0',
+    'rpt list for tag zero object');
+  is ($tag_spiked->rpt_list, '25846:1:888;25846:2:888;25846:3:888;25846:4:888',
+    'rpt list for spiked in tag object');
+  is ($tag_last->rpt_list, '25846:1:21;25846:2:21;25846:3:21;25846:4:21',
+    'rpt list for tag 21 object');
+  is ($tag_first->rpt_list, '25846:1:1;25846:2:1;25846:3:1;25846:4:1',
+    'rpt list for tag 1 object');
+
+  my $expected = {
+    '25846:1:0;25846:2:0;25846:3:0;25846:4:0' => {
+      'sample_id' => undef,
+      'sample_name' => undef,
+      'sample_common_name' => 'Homo sapiens',
+      'study_id' => 5318,
+      'study_name' => 'NovaSeq testing',
+      'reference_genome' => 'Homo_sapiens (1000Genomes_hs37d5 + ensembl_75_transcriptome)',
+      'library_id' => undef,
+      'library_name' => undef,
+      'library_type' => 'Standard',
+      'default_tag_sequence' => undef,
+      'study_alignments_in_bam' => 1,
+      'study_contains_nonconsented_human' => 0
+    },
+    '25846:1:888;25846:2:888;25846:3:888;25846:4:888' => {
+      'sample_id' => '1255141',
+      'sample_name' => 'phiX_for_spiked_buffers',
+      'sample_common_name' => undef,
+      'study_id' => 198,
+      'study_name' => 'Illumina Controls',
+      'reference_genome' => undef,
+      'library_id' => '17883061',
+      'library_name' => '17883061',
+      'library_type' => undef,
+      'default_tag_sequence' => 'ACAACGCAATC',
+      'study_alignments_in_bam' => 1,
+      'study_contains_nonconsented_human' => 0
+    },
+    '25846:1:21;25846:2:21;25846:3:21;25846:4:21' => {
+      'sample_id' => '3681772',
+      'sample_name' => '5318STDY7462477',
+      'sample_common_name' => 'Homo sapiens',
+      'study_id' => 5318,
+      'study_name' => 'NovaSeq testing',
+      'reference_genome' => 'Homo_sapiens (1000Genomes_hs37d5 + ensembl_75_transcriptome)',
+      'library_id' => '21059089',
+      'library_name' => '21059089',
+      'library_type' => 'Standard',
+      'default_tag_sequence' => 'TCGAGCGT',
+      'study_alignments_in_bam' => 1,
+      'study_contains_nonconsented_human' => 0
+    },
+    '25846:1:1;25846:2:1;25846:3:1;25846:4:1' => {
+      'sample_id' => '3681752',
+      'sample_name' => '5318STDY7462457',
+      'sample_common_name' => 'Homo sapiens',
+      'study_id' => 5318,
+      'study_name' => 'NovaSeq testing',
+      'reference_genome' => 'Homo_sapiens (1000Genomes_hs37d5 + ensembl_75_transcriptome)',
+      'library_id' => '21059039',
+      'library_name' => '21059039',
+      'library_type' => 'Standard',
+      'default_tag_sequence' => 'ATCACGTT',
+      'study_alignments_in_bam' => 1,
+      'study_contains_nonconsented_human' => 0
+    } 
+  };
+
+  for my $o (($tag_zero, $tag_spiked, $tag_first, $tag_last)) {
+    my $rpt_list = $o->rpt_list;
+    ok (!defined $o->id_run, "id_run not defined for $rpt_list");
+    for my $method ( qw/
+                         sample_id sample_name sample_common_name
+                         study_id study_name reference_genome
+                         library_id library_name library_type
+                         default_tag_sequence
+                       /) {
+      is ($o->$method, $expected->{$rpt_list}->{$method}, "$method for $rpt_list");
+    }
+    ok ($o->study_alignments_in_bam, "alignment true for $rpt_list");
+    ok (!$o->study_contains_nonconsented_human, "nonconsented_human false for $rpt_list");
+  }
+  
+  ok ($tag_spiked->is_phix_spike, 'is phix spike');
+  ok (!$tag_first->is_phix_spike, 'is not phix spike');
+  ok (!$tag_zero->is_phix_spike, 'is not phix spike');
+
+  is (join(q[:], $tag_zero->study_names), 'Illumina Controls:NovaSeq testing',
+    'study names including spiked phix');
+  is (join(q[:], $tag_zero->study_names(1)), 'Illumina Controls:NovaSeq testing',
+    'sudy names including spiked phix');
+  is (join(q[:], $tag_zero->study_names(0)), 'NovaSeq testing',
+    'study names excluding spiked phix');
+
+  my @sample_names = qw/
+    5318STDY7462457 5318STDY7462458 5318STDY7462459 5318STDY7462460 5318STDY7462461
+    5318STDY7462462 5318STDY7462463 5318STDY7462464 5318STDY7462465 5318STDY7462466
+    5318STDY7462467 5318STDY7462468 5318STDY7462469 5318STDY7462470 5318STDY7462471
+    5318STDY7462472 5318STDY7462473 5318STDY7462474 5318STDY7462475 5318STDY7462476
+    5318STDY7462477  /;
+  
+  is (join(q[:], $tag_zero->sample_names(0)), join(q[:], @sample_names),
+    'sample names excluding spiked phix');
+  push @sample_names, 'phiX_for_spiked_buffers';
+  is (join(q[:], $tag_zero->sample_names()), join(q[:], @sample_names),
+    'sample names including spiked phix');
+  is (join(q[:], $tag_zero->sample_names(1)), join(q[:], @sample_names),
+    'sample names including spiked phix');
+};
+
+subtest 'aggregation across lanes for non-pools' => sub {
+  plan tests => 13;
+
+  local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/test40_lims/samplesheet_rapidrun_nopool.csv';
+  my @merged = st::api::lims->new(id_run => 22672)->aggregate_xlanes();
+
+  my $l = $merged[0];
+  is (scalar @merged, 1, 'one object returned');
+  is ($l->rpt_list, '22672:1;22672:2', 'correct rpt_list');
+  ok (!defined $l->id_run, "id_run not defined");
+  ok (!$l->is_phix_spike, 'is not phix spike');
+
+  my $expected = {
+    'sample_id' => '2917461',
+    'sample_name' => '4600STDY6702635',
+    'sample_common_name' => 'Homo sapiens',
+    'study_id' => 4600,
+    'study_name' => 'Osteosarcoma_WGBS',
+    'reference_genome' => 'Not suitable for alignment',
+    'library_id' => '18914827',
+    'library_name' => '18914827',
+    'library_type' => 'Bisulphite pre quality controlled',
+    'study_alignments_in_bam' => 1,
+    'study_contains_nonconsented_human' => 0 
+  };
+
+  for my $method ( qw/
+                       sample_id sample_name sample_common_name
+                       study_id study_name reference_genome
+                       library_id library_name library_type
+                     /) {
+    is ($l->$method, $expected->{$method}, "$method");
+  }
+};
+
+subtest 'creating tag zero object' => sub {
+  plan tests => 4;
+
+  local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/test40_lims/samplesheet_novaseq4lanes.csv';
+
+  my $l = st::api::lims->new(id_run => 25846);
+  throws_ok { $l->create_tag_zero_object() } qr/Position should be defined/,
+    'method cannot be called on run-level object';
+  $l = st::api::lims->new(rpt_list => '25846:2:1');
+  throws_ok { $l->create_tag_zero_object() } qr/Position should be defined/,
+    'method cannot be called on an object for a composition';
+
+  my $description = 'st::api::lims object, driver - samplesheet, id_run 25846, ' .
+    'path t/data/test40_lims/samplesheet_novaseq4lanes.csv, position 3, tag_index 0';
+  $l = st::api::lims->new(id_run => 25846, position => 3);
+  is ($l->create_tag_zero_object()->to_string(), $description, 'created from lane-level object');
+  $l = st::api::lims->new(id_run => 25846, position => 3, tag_index => 5);
+  is ($l->create_tag_zero_object()->to_string(), $description, 'created from plex-level object');
+};
+
+subtest 'creating lane object' => sub {
+  plan tests => 13;
+ 
+  local $ENV{NPG_CACHED_SAMPLESHEET_FILE} = 't/data/test40_lims/samplesheet_novaseq4lanes.csv';
+
+  my $l = st::api::lims->new(rpt_list => '25846:1:1;25846:2:1');
+
+  my $e = qr/id_run and position are expected as arguments/;
+  throws_ok { $l->create_lane_object() } $e, 'no arguments - error';
+  throws_ok { $l->create_lane_object(1) } $e, 'one argument - error';
+  throws_ok { $l->create_lane_object(1, 0) } $e,
+    'one of argument is false - error';
+
+  for my $p ((1,2)) {
+    my $lane_l = $l->create_lane_object(25846, $p);
+    is ($lane_l->id_run, 25846, 'run id is 25846');
+    is ($lane_l->position, $p, "position is $p");
+    is ($lane_l->rpt_list, undef, 'rpt_list is undefined');
+    is ($lane_l->tag_index, undef, 'tag index is undefined');
+    ok ($lane_l->is_pool, 'the entity is a pool');
+  }
+};
 
 1;

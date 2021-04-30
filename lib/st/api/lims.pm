@@ -6,7 +6,7 @@ use MooseX::Aliases;
 use Moose::Meta::Class;
 use namespace::autoclean;
 use Readonly;
-use List::MoreUtils qw/any none uniq/;
+use List::MoreUtils qw/any none uniq each_arrayref/;
 use Class::Load qw/load_class/;
 
 use npg_tracking::util::types;
@@ -86,6 +86,7 @@ Readonly::Hash   my  %METHODS_PER_CATEGORY => {
                            required_insert_size_range
                            qc_state
                            purpose
+                           gbs_plex_name
                       /],
 
     'lane'         => [qw/ lane_id
@@ -110,6 +111,8 @@ Readonly::Hash   my  %METHODS_PER_CATEGORY => {
                            sample_supplier_name
                            sample_cohort
                            sample_donor_id
+                           sample_is_control
+                           sample_control_type
                       /],
 
     'study'        => [qw/ study_id
@@ -235,7 +238,6 @@ foreach my $object_type (keys %ATTRIBUTE_LIST_METHODS) {
 
     my $method_body = sub {
       my ($self, $with_spiked_control) = @_;
-
       return $self->_list_of_attributes($attr_name, $with_spiked_control);
     };
 
@@ -320,15 +322,6 @@ for my $m ( @METHODS ){
     }
     return;
   });
-}
-
-=head2 is_composition
-
-=cut
-
-sub is_composition {
-  my $self = shift;
-  return $self->rpt_list ? 1 : 0;
 }
 
 =head2 inline_index_read
@@ -417,14 +410,16 @@ sub _build__sample_description {
 
 =head2 is_phix_spike
 
-If plex library and is the spiked phiX.
+True for a plex library that is the spiked phiX.
 
 =cut
 
 sub is_phix_spike {
   my $self = shift;
-  if(my $ti = $self->tag_index and my $spti = $self->spiked_phix_tag_index) {
-     return $ti == $spti;
+  if ($self->is_composition) {
+    return ($self->children)[0]->is_phix_spike;
+  } elsif (my $ti = $self->tag_index and my $spti = $self->spiked_phix_tag_index) {
+    return $ti == $spti;
   }
   return;
 }
@@ -641,8 +636,8 @@ sub _helper_over_pool_for_boolean_build_methods {
   my ($self,$method) = @_;
 
   my $cuh = 0;
-  if ($self->position) {
-    my @lims =  ($self->is_pool && !$self->tag_index) ? $self->children : ($self);
+  if ($self->position || $self->is_composition) {
+    my @lims =  (($self->is_pool && !$self->tag_index) || $self->is_composition) ? $self->children : ($self);
     foreach my $l (@lims) {
       $cuh = $l->$method;
       if ($cuh) {
@@ -763,13 +758,14 @@ sub _build_separate_y_chromosome_data {
 Method returning a list of st::api::lims objects that are associated with this object
 and belong to the next (one lower) level. An empty list for a non-pool lane and for a plex.
 For a pooled lane contains plex-level objects. On a run level, when the position 
-accessor is not set, returns lane level objects.
-
-=cut
+accessor is not set, returns lane level objects. For the st::api::lims type object that
+was instantiated with an rpt_list attribute, returns a list of st::api::lims type objects
+corresponding to individual components of the composition defined by the rpt_list attribute
+value.
 
 =head2 num_children
 
-Returns the number of children objects, ie the length children list.
+Returns the number of children objects.
 
 =cut
 
@@ -789,11 +785,12 @@ sub _build__cached_children {
 
   my @children = ();
   my @basic_attrs = qw/id_run position tag_index/;
+  my $driver_type = $self->driver_type;
 
   if ($self->driver) {
     if($self->driver->can('children')) {
       foreach my $c ($self->driver->children) {
-        my $init = {'driver_type' => $self->driver_type, 'driver' => $c};
+        my $init = {'driver_type' => $driver_type, 'driver' => $c};
         foreach my $attr (@basic_attrs) {
           if(my $attr_value=$self->$attr || ($c->can($attr) ? $c->$attr : undef)) {
             $init->{$attr}=$attr_value;
@@ -819,16 +816,7 @@ sub _build__cached_children {
                         ]
       )->new_object(rpt_list => $rpt_list)->create_composition();
 
-      my @components = $composition->components_list();
-      my $driver_type = $self->driver_type;
-      if ($driver_type eq $SAMPLESHEET_DRIVER_TYPE) {
-        my @unique_ids = uniq map { $_->id_run } @components;
-        if (@unique_ids != 1) {
-          croak qq[Cannot use $SAMPLESHEET_DRIVER_TYPE driver with components from multiple runs];
-        }
-      }
-
-      foreach my $component (@components) {
+      foreach my $component ($composition->components_list()) {
         my %init = %{$self->_driver_arguments()};
         $init{'driver_type'} = $driver_type;
         foreach my $attr (@basic_attrs) {
@@ -839,6 +827,198 @@ sub _build__cached_children {
     }
   }
   return \@children;
+}
+
+=head2 is_composition
+
+=cut
+
+sub is_composition {
+  my $self = shift;
+  return $self->rpt_list ? 1 : 0;
+}
+
+=head2 aggregate_xlanes
+
+For a run-level st::api::lims object returns a list of st::api::lims
+objects representing aggregated entities. 
+
+Aggregation is performed across all lanes of the lims object, unless
+an explicit list of positions is gived as an argument.
+
+If all lanes are pools, agreggation is performed per tag index (plex)
+and the list contains one or more objects, each one representing a tag
+index (plex). An entry for tag index zero is added as well.
+
+If lanes are libraries, aggregation of these libraries
+is performed and the list contains one object.
+
+It is possible to aggregate one lane, though practically it does not
+make much sense.
+
+List members represent compositions and have rpt_list attribute set.
+
+  my $l = st::api::lims->new(id_run => 44);
+  my $a = $l->aggregate_xlanes();
+  my $a = $l->aggregate_xlanes(qw/2 3/);
+
+Assuming run id 44, for two lanes representing the same pool of four tag
+indexes (1, 2, 3, 4), the list members will have the following values
+of the rpt_list attribute:
+
+  44:1:0;44:2:0
+  44:1:1;44:2:1
+  44:1:2;44:2:2
+  44:1:3;44:2:3
+  44:1:4;44:2:4
+
+The new objects has the same driver settings as the original object.
+
+=cut
+
+sub aggregate_xlanes {
+  my ($self, @positions) = @_;
+
+  if ($self->is_composition || $self->position) {
+    croak 'Not run-level object';
+  }
+
+  my $lanes_ia = $self->children_ia;
+
+  #####
+  # If a list of positions is given, restrict the operation to
+  # this set of positions.
+  #
+  if (@positions) {
+    my $reduced = {};
+    foreach my $p (@positions) {
+      if (!exists $lanes_ia->{$p}) {
+        croak sprintf 'Requested position %i does not exists in %s',
+                      $p,
+                      $self->to_string();
+      }
+      $reduced->{$p} = $lanes_ia->{$p};
+    }
+    $lanes_ia = $reduced;
+  }
+
+  my @lanes = sort { $a->position <=> $b->position } values %{$lanes_ia};
+  @positions = keys %{$lanes_ia};
+
+  #####
+  # We cannot have a mixture of pools and libraries.
+  #
+  my @pools = grep {$_} map { $_->is_pool ? 1 : 0 } @lanes;
+  if (@pools != 0 && @pools != @lanes) {
+    croak sprintf 'Both pools and libraries in lanes %s in %s',
+                  join(q[, ], @positions),
+                  $self->to_string();
+  }
+
+  #####
+  # Test function. Certain attrubutes should be the same
+  # across all objects of the lims array (first arg.).
+  #  
+  my $can_merge = sub {
+    my ($lims, @attrs) = @_;
+    for my $attr_name (@attrs) {
+      my @values = grep { defined $_ } map { $_->$attr_name } @{$lims};
+      if (@values != @{$lims}) {
+        croak qq[$attr_name is not defined for one of lims objects];
+      }
+      @values = uniq @values;
+      if (@values != 1) {
+        croak qq[$attr_name is not the same across lims objects list];
+      }
+    }
+    return;
+  }; # End of test function
+
+  my %init = %{$self->_driver_arguments()};
+  $init{'driver_type'} = $self->driver_type;
+  delete $init{'id_run'};
+
+  my $lims4compisitions = {};
+  my @test_attrs = qw/sample_id library_id/;
+  my $lanes_rpt_list = npg_tracking::glossary::rpt->deflate_rpts(\@lanes);
+  my @aggregated = ();
+
+  if (!@pools) {
+    $can_merge->(\@lanes, @test_attrs); # Test consistency
+    push @aggregated, __PACKAGE__->new(%init, rpt_list => $lanes_rpt_list);
+  } else {
+    my @sizes = uniq (map { $_->num_children } @lanes);
+    if (@sizes != 1) { # Test consistency
+      croak 'Different number of plexes in lanes';
+    }
+
+    #####
+    # The each_arrayref function is given a list of arrays of plex-level st::api::lims
+    # objects, each array represent all plexes in a lane. The arrays of plexes are ordered
+    # by tag index. The each_arrayref function returns an iterator, which on each invocation
+    # collates and returns a list of first, second, etc, array members in the first, second,
+    # etc, invocation respectively.
+    #
+    my $ea = each_arrayref map { [$_->children()] } @lanes;
+    while ( my @plexes = $ea->() ) {
+      $can_merge->(\@plexes, @test_attrs, 'tag_index');  # Test consistency
+      push @aggregated, __PACKAGE__->new(%init,
+        rpt_list => npg_tracking::glossary::rpt->deflate_rpts(\@plexes));
+    }
+    # Add object for tag zero
+    push @aggregated, __PACKAGE__->new(%init,
+      rpt_list => npg_tracking::glossary::rpt->tag_zero_rpt_list($lanes_rpt_list));
+  }
+
+  return @aggregated;
+}
+
+=head2 create_tag_zero_object
+ 
+Using id_run and position values of this object, creates and returns
+st::api::lims object for tag zero. The new object has the same driver
+settings as the original object.
+
+  my $l = st::api::lims->new(id_run => 4, position => 3);
+  my $t0_lims = $l->create_tag_zero_object();
+
+  my $l = st::api::lims->new(id_run => 4, position => 3, tag_index => 6);
+  my $t0_lims = $l->create_tag_zero_object();
+
+=cut
+
+sub create_tag_zero_object {
+  my $self = shift;
+  if (!defined $self->position) {
+    croak 'Position should be defined';
+  }
+  my %init = %{$self->_driver_arguments()};
+  $init{'driver_type'} = $self->driver_type;
+  $init{'tag_index'}   = 0;
+  return __PACKAGE__->new(%init);
+}
+
+=head2 create_lane_object
+
+Using id_run and position values given as attributes to this method, creates
+and returns an st::api::lims object for the lane corresponding to the given
+attributes. The new object has the same driver settings as the original object.
+
+  my $l = st::api::lims->new(id_run => 4, position => 3, tag_index => 6);
+  my $lane_lims = $l->create_lane_object(4,4);
+
+=cut
+
+sub create_lane_object {
+  my ($self, $id_run, $position) = @_;
+  ($id_run and $position) or croak 'id_run and position are expected as arguments';
+  my %init = %{$self->_driver_arguments()};
+  $init{'driver_type'} = $self->driver_type;
+  delete $init{'tag_index'};
+  delete $init{'rpt_list'};
+  $init{'id_run'}   = $id_run;
+  $init{'position'} = $position;
+  return __PACKAGE__->new(%init);
 }
 
 =head2 cached_samplesheet_var_name
@@ -940,19 +1120,28 @@ The same as children_ia. Retained for backward compatibility
 sub _list_of_attributes {
   my ($self, $attr_name, $with_spiked_control) = @_;
   my @l = ();
-  if (!defined $self->position && !$self->is_composition) {
+  my $is_composition = $self->is_composition;
+  if (!defined $self->position && !$is_composition) {
     return @l;
   }
 
   if (!defined $with_spiked_control) { $with_spiked_control = 1; }
+  my $pool_or_composition = $self->is_pool || $is_composition;
+  my $list_method_name = $attr_name . q[s];
 
   @l = sort {$a cmp $b}
        uniq
        grep {defined and length}
-       map {$_->$attr_name}
-    ($self->is_pool || $self->is_composition) ?
+       map {
+         ( $is_composition
+           && (!defined $_->tag_index || $_->tag_index == 0)
+           && $_->can($list_method_name) )
+         ? $_->$list_method_name($with_spiked_control)
+         : $_->$attr_name
+       }
+    $pool_or_composition ?
     $attr_name ne 'spiked_phix_tag_index' ? # avoid unintended recursion
-      grep { $with_spiked_control || ! $_->is_phix_spike } $self->children :
+      grep { $with_spiked_control || (!$_->is_phix_spike || $is_composition) } $self->children :
       () :
     ($self);
   return @l;
@@ -1237,13 +1426,16 @@ __END__
 
 =head1 BUGS AND LIMITATIONS
 
+Objects created with rpt_list argument defined:
+is_control method always returns false
+
 =head1 AUTHOR
 
 Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2016 Genome Research Ltd
+Copyright (C) 2013,2014,2015,2016,2017,2018,2019,2020 Genome Research Ltd.
 
 This file is part of NPG.
 

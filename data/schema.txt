@@ -36,39 +36,6 @@ CREATE TABLE `annotation` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `cost_code`
---
-
-DROP TABLE IF EXISTS `cost_code`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `cost_code` (
-  `id_cost_code` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `cost_code` varchar(45) NOT NULL,
-  `id_cost_group` bigint(20) unsigned NOT NULL,
-  PRIMARY KEY (`id_cost_code`),
-  UNIQUE KEY `cost_code_UNIQUE` (`cost_code`),
-  KEY `idx_id_cost_group` (`id_cost_group`),
-  CONSTRAINT `idx_id_cost_group` FOREIGN KEY (`id_cost_group`) REFERENCES `cost_group` (`id_cost_group`) ON DELETE NO ACTION ON UPDATE NO ACTION
-) ENGINE=InnoDB  DEFAULT CHARSET=latin1;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `cost_group`
---
-
-DROP TABLE IF EXISTS `cost_group`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `cost_group` (
-  `id_cost_group` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(45) NOT NULL,
-  PRIMARY KEY (`id_cost_group`),
-  UNIQUE KEY `name_UNIQUE` (`name`)
-) ENGINE=InnoDB  DEFAULT CHARSET=latin1;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
 -- Table structure for table `designation`
 --
 
@@ -135,58 +102,6 @@ CREATE TABLE `event_type` (
   PRIMARY KEY (`id_event_type`),
   KEY `evt_entityt` (`id_entity_type`),
   CONSTRAINT `evt_entityt` FOREIGN KEY (`id_entity_type`) REFERENCES `entity_type` (`id_entity_type`) ON DELETE NO ACTION ON UPDATE NO ACTION
-) ENGINE=InnoDB  DEFAULT CHARSET=utf8;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `event_type_service`
---
-
-DROP TABLE IF EXISTS `event_type_service`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `event_type_service` (
-  `id_event_type_service` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `id_ext_service` bigint(20) unsigned NOT NULL DEFAULT '0',
-  `id_event_type` bigint(20) unsigned NOT NULL DEFAULT '0',
-  PRIMARY KEY (`id_event_type_service`),
-  KEY `ets_id_ext_service` (`id_ext_service`),
-  KEY `ets_id_event_type` (`id_event_type`),
-  CONSTRAINT `ets_id_event_type` FOREIGN KEY (`id_event_type`) REFERENCES `event_type` (`id_event_type`) ON DELETE NO ACTION ON UPDATE NO ACTION,
-  CONSTRAINT `ets_id_ext_service` FOREIGN KEY (`id_ext_service`) REFERENCES `ext_service` (`id_ext_service`) ON DELETE NO ACTION ON UPDATE NO ACTION
-) ENGINE=InnoDB  DEFAULT CHARSET=utf8;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `event_type_subscriber`
---
-
-DROP TABLE IF EXISTS `event_type_subscriber`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `event_type_subscriber` (
-  `id_event_type_subscriber` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `id_event_type` bigint(20) unsigned NOT NULL DEFAULT '0',
-  `id_usergroup` bigint(20) unsigned NOT NULL DEFAULT '0',
-  PRIMARY KEY (`id_event_type_subscriber`,`id_usergroup`,`id_event_type`) USING BTREE,
-  KEY `evts_evt` (`id_event_type`),
-  KEY `evts_ug` (`id_usergroup`),
-  CONSTRAINT `evts_evt` FOREIGN KEY (`id_event_type`) REFERENCES `event_type` (`id_event_type`) ON DELETE NO ACTION ON UPDATE NO ACTION,
-  CONSTRAINT `evts_ug` FOREIGN KEY (`id_usergroup`) REFERENCES `usergroup` (`id_usergroup`) ON DELETE NO ACTION ON UPDATE NO ACTION
-) ENGINE=InnoDB  DEFAULT CHARSET=utf8;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `ext_service`
---
-
-DROP TABLE IF EXISTS `ext_service`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `ext_service` (
-  `id_ext_service` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `description` char(64) NOT NULL DEFAULT '',
-  PRIMARY KEY (`id_ext_service`)
 ) ENGINE=InnoDB  DEFAULT CHARSET=utf8;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -405,24 +320,6 @@ CREATE TABLE `instrument_utilisation` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `mail_run_project_followers`
---
-
-DROP TABLE IF EXISTS `mail_run_project_followers`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `mail_run_project_followers` (
-  `id_mail_run_project_followers` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `run_complete_sent` datetime DEFAULT NULL,
-  `run_archived_sent` datetime DEFAULT NULL,
-  `id_run` bigint(20) unsigned NOT NULL,
-  PRIMARY KEY (`id_mail_run_project_followers`),
-  UNIQUE KEY `run_index` (`id_run`),
-  CONSTRAINT `run_mail` FOREIGN KEY (`id_run`) REFERENCES `run` (`id_run`)
-) ENGINE=InnoDB  DEFAULT CHARSET=utf8;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
 -- Table structure for table `manufacturer`
 --
 
@@ -628,77 +525,6 @@ CREATE TABLE `run_status_dict` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `sensor`
---
-
-DROP TABLE IF EXISTS `sensor`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `sensor` (
-  `id_sensor` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `is_current` tinyint(1) NOT NULL,
-  `guid` varchar(50) NOT NULL,
-  `name` varchar(10) NOT NULL,
-  `description` varchar(50) DEFAULT NULL,
-  PRIMARY KEY (`id_sensor`),
-  UNIQUE KEY `guid` (`guid`),
-  UNIQUE KEY `name` (`name`)
-) ENGINE=InnoDB  DEFAULT CHARSET=latin1;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `sensor_data`
---
-
-DROP TABLE IF EXISTS `sensor_data`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `sensor_data` (
-  `id_sensor_data` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `date` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `id_sensor` bigint(20) unsigned NOT NULL,
-  `value` double NOT NULL,
-  PRIMARY KEY (`id_sensor_data`),
-  KEY `sd_sensor` (`id_sensor`),
-  CONSTRAINT `sd_sensor` FOREIGN KEY (`id_sensor`) REFERENCES `sensor` (`id_sensor`)
-) ENGINE=InnoDB  DEFAULT CHARSET=latin1;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `sensor_data_instrument`
---
-
-DROP TABLE IF EXISTS `sensor_data_instrument`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `sensor_data_instrument` (
-  `id_sensor_data` bigint(20) unsigned NOT NULL,
-  `id_instrument` bigint(20) unsigned NOT NULL,
-  KEY `sdi_sensor_data` (`id_sensor_data`),
-  KEY `sdi_instrument` (`id_instrument`),
-  CONSTRAINT `sdi_instrument` FOREIGN KEY (`id_instrument`) REFERENCES `instrument` (`id_instrument`),
-  CONSTRAINT `sdi_sensor_data` FOREIGN KEY (`id_sensor_data`) REFERENCES `sensor_data` (`id_sensor_data`)
-) ENGINE=InnoDB DEFAULT CHARSET=latin1;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `sensor_instrument`
---
-
-DROP TABLE IF EXISTS `sensor_instrument`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `sensor_instrument` (
-  `id_sensor` bigint(20) unsigned NOT NULL,
-  `id_instrument` bigint(20) unsigned NOT NULL,
-  KEY `si_sensor` (`id_sensor`),
-  KEY `si_instrument` (`id_instrument`),
-  CONSTRAINT `si_instrument` FOREIGN KEY (`id_instrument`) REFERENCES `instrument` (`id_instrument`),
-  CONSTRAINT `si_sensor` FOREIGN KEY (`id_sensor`) REFERENCES `sensor` (`id_sensor`)
-) ENGINE=InnoDB DEFAULT CHARSET=latin1;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
 -- Table structure for table `st_cache`
 --
 
@@ -863,4 +689,4 @@ CREATE TABLE `usergroup` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2016-10-19 11:47:27
+-- Dump completed on 2017-02-28 18:13:48

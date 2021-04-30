@@ -1,20 +1,15 @@
-#########
-# Author:        jo3
-# Created:       2010-04-28
-
 package Monitor::Staging;
 
 use Moose;
-with 'npg_tracking::illumina::run::folder::location';    # For @STAGING_AREAS
-with 'Monitor::Roles::Schema';
-
 use Monitor::RunFolder;
-
 use Carp;
-use English qw(-no_match_vars);
+use Try::Tiny;
 use MooseX::StrictConstructor;
 
 use npg_tracking::illumina::run::folder::validation;
+use npg_tracking::illumina::run::folder::location;
+
+with 'Monitor::Roles::Schema';
 
 
 our $VERSION = '0';
@@ -37,17 +32,13 @@ sub validate_areas {
     foreach (@arguments) {
         my $area = $_;
 
-
         if (m/^ \d+ $/msx) {
-
             if ( !defined $known_areas->[ $_ + 0 ] ) {
                 carp "Parameter out of bounds: $_";
                 next;
             }
-
             $area = $known_areas->[$_];
         }
-
 
         if ( !-d $area ) {
             carp "Staging directory not found: $area";
@@ -75,19 +66,48 @@ sub find_live {
 
     foreach my $run_dir ( glob $staging_area . q{/{IL,HS}*/{incoming,analysis}/*} ) {
 
-        next if !-d $run_dir;
+        warn "\n\nFound $run_dir\n";
 
-        my $check = Monitor::RunFolder->new( runfolder_path => $run_dir );
-        my $run_folder = $check->run_folder();
+        if (-d $run_dir) {
+            my $check = Monitor::RunFolder->new(runfolder_path      => $run_dir,
+                                                npg_tracking_schema => $self->schema);
+            my $run_folder = $check->run_folder();
 
-        my $validate = npg_tracking::illumina::run::folder::validation->new(
-             run_folder          => $run_folder,
-             npg_tracking_schema => $self->schema );
-        next if !$validate->check();
+            my $id_run;
+            try {
+                $id_run = $check->id_run();
+                warn "Retrieved id_run $id_run\n";
+            } catch {
+                warn "Skipping $run_dir - error retrieving id_run\n";
+            };
 
-        $path_for{ $check->id_run() } = $run_dir;
+            my $run_row = $self->schema->resultset('Run')->find({ id_run => $id_run });
+            if (! $run_row ) {
+                if ( ! defined $id_run ) {
+                    warn qq[ID run is undefined, skipping\n];
+                } else {
+                    warn qq[ID Run '$id_run' not found in database, skipping\n];
+                }
+            } else {
+                if (! $run_row->folder_name ) {
+                  warn qq[Folder name in db not available, will try to update using '$run_folder'.];
+                  $run_row->update({'folder_name' => $run_folder}); # or validation will fail
+                }
+
+                if ( npg_tracking::illumina::run::folder::validation->new(
+                         run_folder          => $run_folder,
+                         id_run              => $id_run,
+                         npg_tracking_schema => $self->schema )->check() ) {
+                    $path_for{$id_run} = $run_dir;
+                    warn "Cached $run_dir for run $id_run\n";
+                } else {
+                    warn "Skipping $run_dir - not valid\n";
+                }
+            }
+        } else {
+          warn "Skipping $run_dir - is not a directory\n";
+        }
     }
-
 
     # Remove any folders belonging to cancelled runs.
     my $run_status_rs = $self->schema->resultset('RunStatus')->search(
@@ -105,22 +125,18 @@ sub find_live {
         my $cancelled_run_id = $run_status_row->id_run();
 
         if ( defined $path_for{$cancelled_run_id} ) {
-             ( delete $path_for{$cancelled_run_id} );
+            delete $path_for{$cancelled_run_id};
         }
     }
 
     return values %path_for;
 }
 
-
-
 no Moose;
 __PACKAGE__->meta->make_immutable();
 1;
 
-
 __END__
-
 
 =head1 NAME
 
@@ -128,7 +144,6 @@ Monitor::Staging - interrogate the staging area of an Illumina
 short read sequencer.
 
 =head1 VERSION
-
 
 =head1 SYNOPSIS
 
@@ -166,7 +181,7 @@ they match /staging_area/machine/{incoming, analysis}/run_folder
 
 =item Carp
 
-=item English
+=item Try::Tiny
 
 =item MooseX::StrictConstructor
 
@@ -174,19 +189,21 @@ they match /staging_area/machine/{incoming, analysis}/run_folder
 
 =head1 INCOMPATIBILITIES
 
-
-
 =head1 BUGS AND LIMITATIONS
-
-
 
 =head1 AUTHOR
 
-John O'Brien, E<lt>jo3@sanger.ac.ukE<gt>
+=over
+
+=item John O'Brien
+
+=item Marina Gourtovaia
+
+=back
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2010 GRL, by John O'Brien
+Copyright (C) 2013,2014,2015,2018,2019,2020 Genome Research Ltd.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

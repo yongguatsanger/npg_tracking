@@ -17,25 +17,86 @@ use Fcntl qw/S_ISGID/;
 use npg_tracking::util::config qw(get_config_staging_areas);
 
 extends 'Monitor::RunFolder';
+with qw/MooseX::Getopt Monitor::Roles::Cycle/;
 
 our $VERSION = '0';
 
 Readonly::Scalar my $MAXIMUM_CYCLE_LAG    => 6;
 Readonly::Scalar my $MTIME_INDEX          => 9;
 Readonly::Scalar my $SECONDS_PER_MINUTE   => 60;
+Readonly::Scalar my $MINUTES_PER_HOUR     => 60;
+Readonly::Scalar my $SECONDS_PER_HOUR     => $SECONDS_PER_MINUTE * $MINUTES_PER_HOUR;
+Readonly::Scalar my $MAX_COMPLETE_WAIT    => 6 * $SECONDS_PER_HOUR;
 Readonly::Scalar my $RTA_COMPLETE         => 10 * $SECONDS_PER_MINUTE;
 Readonly::Scalar my $INTENSITIES_DIR_PATH => 'Data/Intensities';
-Readonly::Array  my @NO_MOVE_NAMES        => qw( npgdonotmove npg_do_not_move );
 Readonly::Scalar my $MODE_INDEX           => 2;
+
+Readonly::Scalar my $RTA_COMPLETE_FN      => q[RTAComplete\.txt];
+Readonly::Scalar my $COPY_COMPLETE_FN     => q[CopyComplete\.txt];
 
 has 'rta_complete_wait' => (isa          => 'Int',
                             is           => 'ro',
                             default      => $RTA_COMPLETE,
                            );
 
+has 'status_update' => (isa          => 'Bool',
+                        is           => 'ro',
+                        default      => 1,
+                       );
+
 sub cycle_lag {
     my ($self) = @_;
     return ( $self->delay() > $MAXIMUM_CYCLE_LAG ) ? 1 : 0;
+}
+
+sub _find_files {
+    my ($self, $filename) = @_;
+    my $run_path = $self->runfolder_path();
+
+    my @file_list;
+
+    # The trailing slash forces IO::All to cope with symlinks.
+    eval { @file_list = io("$run_path/")->all_files(); 1; }
+        or do { carp $EVAL_ERROR; return 0; };
+
+    my @markers = map {q().$_} grep { basename($_) =~ m/\A $filename \Z/msx } @file_list;
+
+    if ( scalar @markers > 1 ) {
+      carp qq[Unexpected to find multiple files matching pattern '$filename' in staging.];
+    }
+
+    return @markers;
+}
+
+sub _has_copy_complete_file {
+    my ($self) = @_;
+    my @files = $self->_find_files($COPY_COMPLETE_FN);
+    return scalar @files;
+}
+
+sub is_run_complete {
+    my ($self) = @_;
+
+    my @markers = $self->_find_files($RTA_COMPLETE_FN);
+
+    if ( scalar @markers ) { # Has RTAComplete
+        if ( $self->platform_NovaSeq() ) {
+            if ( $self->_has_copy_complete_file() ) {
+                return 1;
+            } else {
+                my $mtime = ( stat $markers[0] )[$MTIME_INDEX];
+                my $last_modified = time() - $mtime;
+                return $last_modified > $MAX_COMPLETE_WAIT;
+            }
+        }
+        return 1;
+    } else {
+        if ( $self->platform_NovaSeq() && $self->_has_copy_complete_file() ) {
+            my $rf = $self->runfolder_path();
+            carp "NovaSeq runfolder '$rf' with CopyComplete but not RTAComplete";
+        }
+    }
+    return 0;
 }
 
 sub validate_run_complete {
@@ -48,9 +109,6 @@ sub validate_run_complete {
     return 0 if !$self->mirroring_complete( $path );
     return 0 if !$self->check_tiles( $path );
 
-    # Set a marker for fallback_update().
-    $self->{'run_is_complete'} = 1;
-
     # What else goes here?
     return 1;
 }
@@ -60,21 +118,13 @@ sub mirroring_complete {
 
     print {*STDERR} "\tChecking for mirroring complete.\n" or carp $OS_ERROR;
 
-    my @file_list;
-
     my $run_path = $self->runfolder_path();
 
-    # The trailing slash forces IO::All to cope with symlinks.
-    eval { @file_list = io("$run_path/")->all_files(); 1; }
-        or do { carp $EVAL_ERROR; return 0; };
-
-    my $rta = 'RTAComplete';
-
-    my @markers = map {q().$_} grep { $_ =~ m/ $rta /msx } @file_list;
+    my @markers = $self->_find_files($RTA_COMPLETE_FN);
 
     my $mtime = ( scalar @markers )
                 ? ( stat $markers[0] )[$MTIME_INDEX]
-                : time();
+                : time;
     my $last_modified = time() - $mtime;
 
     my $events_file  = $self->runfolder_path() . q{/Events.log};
@@ -107,12 +157,13 @@ sub monitor_stats {
 sub check_tiles {
     my ($self) = @_;
 
-    my $expected_lanes  = $self->lane_count();
-    my $expected_cycles = $self->expected_cycle_count();
-    my $expected_tiles  = $self->lane_tilecount();
-    my $path            = $self->runfolder_path();
+    my $expected_lanes    = $self->lane_count();
+    my $expected_surfaces = $self->surface_count();
+    my $expected_cycles   = $self->expected_cycle_count();
+    my $expected_tiles    = $self->lane_tilecount();
+    my $path              = $self->runfolder_path();
 
-    print {*STDERR} "\tChecking lanes, cycles, tiles...\n" or carp $OS_ERROR;
+    print {*STDERR} "\tChecking Lanes, Cycles, Tiles...\n" or carp $OS_ERROR;
 
     my @lanes   = glob "$path/$INTENSITIES_DIR_PATH/L*";
     @lanes      = grep { m/ L \d+ $ /msx } @lanes;
@@ -150,7 +201,7 @@ sub check_tiles {
             return 0;
         }
 
-        my $this_lane = substr($lane, -1, 1);
+        my $this_lane = substr $lane, -1, 1;
         if ( ! exists($expected_tiles->{$this_lane}) ) {
             carp "No expected tile count for lane $this_lane";
             return 0;
@@ -158,38 +209,33 @@ sub check_tiles {
         my $expected_tiles_this_lane = $expected_tiles->{$this_lane};
 
         foreach my $cycle ( @cycles) {
-            my $filetype = $cifs_present ? 'cif' : 'bcl';
-            my @tiles   = glob "$cycle/*.$filetype" . q({,.gz});
-            @tiles      = grep { m/ s_ \d+ _ \d+ [.] $filetype (?: [.] gz )? $ /msx } @tiles;
-            my $t_count = scalar @tiles;
+            my $filetype = $cifs_present ? 'cif'
+                                         : $self->platform_NovaSeq() ? 'cbcl' :'bcl';
+            if ( $self->platform_NovaSeq() ) {
+                my @cbcl_files = glob "$cycle/*.$filetype" . q({,.gz});
+                @cbcl_files = grep { m/ L \d+ _ \d+ [.] $filetype (?: [.] gz )? $ /msx } @cbcl_files;
+                my $count = scalar @cbcl_files;
+                # there should be one cbcl file per expected surface
+                if ( $count != $expected_surfaces ) {
+                    carp 'Missing cbcl(s) files: '
+                       . "$cycle - [expected: $expected_surfaces, found: $count]";
+                    return 0;
+                }
+            } else {
+                my @tiles   = glob "$cycle/*.$filetype" . q({,.gz});
+                @tiles      = grep { m/ s_ \d+ _ \d+ [.] $filetype (?: [.] gz )? $ /msx } @tiles;
+                my $t_count = scalar @tiles;
 
-            if ( $t_count != $expected_tiles_this_lane ) {
-                carp 'Missing tile(s): '
-                   . "$lane C#$cycle - [$expected_tiles_this_lane $t_count]";
-                return 0;
+                if ( $t_count != $expected_tiles_this_lane ) {
+                    carp 'Missing tile(s): '
+                       . "$lane C#$cycle - [$expected_tiles_this_lane $t_count]";
+                    return 0;
+                }
             }
-
         }
     }
 
     return 1;
-}
-
-sub mark_as_mirrored {
-    my ($self) = @_;
-
-    $self->run_db_row->update_run_status( 'run mirrored', $self->username() );
-
-    my $mirrored_flag = $self->runfolder_path() . q{/Mirror.completed};
-
-    if ( !-e $mirrored_flag ) {
-        open my $flag_fh, q{>}, $mirrored_flag;
-        close $flag_fh;
-    }
-
-    utime time, time, $mirrored_flag;
-
-    return;
 }
 
 sub move_to_analysis {
@@ -207,9 +253,11 @@ sub move_to_analysis {
             _change_group($group, $destination . "/$INTENSITIES_DIR_PATH");
             push @ms, "Changed group to $group";
         }
-        my $status = 'analysis pending';
-        $self->run_db_row->update_run_status($status, $self->username() );
-        push @ms, "Updated run status to $status";
+        if ($self->status_update) {
+            my $status = 'analysis pending';
+            $self->tracking_run()->update_run_status($status, $self->username() );
+            push @ms, "Updated Run Status to $status";
+        }
     }
 
     return @ms;
@@ -232,19 +280,14 @@ sub move_to_outgoing {
     my ($self) = @_;
 
     my $m;
-    my $rf = $self->runfolder_path();
-    if (any { -e join(q[/], $rf, $_) }  @NO_MOVE_NAMES) {
-        $m = "$rf flagged not to be moved to outgoing"
+    my $status = $self->tracking_run()->current_run_status_description();
+    if ($status eq 'qc complete') {
+        my $moved;
+        ($moved, $m) = $self->_move_folder(
+            $self->_destination_path('analysis', 'outgoing'));
     } else {
-        my $id = $self->run_db_row->id_run;
-        my $status = $self->current_run_status_description();
-        if ($status eq 'qc complete') {
-            my $destination = $self->_destination_path('analysis', 'outgoing');
-            my $moved;
-            ($moved, $m) = $self->_move_folder($destination);
-        } else {
-            $m = "Run $id status $status is not qc complete, not moving to outgoing";
-        }
+        $m = sprintf 'Run %i status %s is not qc complete, not moving to outgoing',
+                     $self->tracking_run()->id_run, $status;
     }
 
     return $m;
@@ -277,26 +320,11 @@ sub _move_folder {
         croak 'Need destination';
     }
     my $rf = $self->runfolder_path();
-    my $result = move($rf, $destination); 
+    my $result = move($rf, $destination);
     my $error = $OS_ERROR;
     my $m = $result ? "Moved $rf to $destination"
                     : "Failed to move $rf to $destination: $error";
     return ($result, $m);
-}
-
-sub fallback_update {
-    my ($self) = @_;
-
-    return if !$self->{'run_is_complete'};
-
-    my $path = $self->runfolder_path();
-    my $latest_cycle = $self->get_latest_cycle($path);
-
-    $self->check_cycle_count( $latest_cycle, 1 );
-
-    $self->read_long_info();
-
-    return;
 }
 
 sub _get_folder_path_glob {
@@ -309,21 +337,11 @@ sub _get_folder_path_glob {
     return $p;
 }
 
-sub update_folder {
-    my ($self) = @_;
-    my $run_db = $self->run_db_row();
-    $run_db->folder_name($self->run_folder);
-    my $glob = $self->_get_folder_path_glob;
-    if ( $glob ) { $run_db->folder_path_glob($glob); }
-    $run_db->update();
-    return;
-}
-
 sub _change_group {
     my ($group, $directory) = @_;
-  
+
     my $temp = $directory . '.original';
-    move($directory, $temp) or croak "move error: $ERRNO";
+    move($directory, $temp) or croak "move error: '$directory to $temp' : $ERRNO";
     mkdir $directory or croak "mkdir error: $ERRNO";
     for my $file (glob "$temp/*") {
         my $dest = $directory . q{/} . basename($file);
@@ -331,8 +349,9 @@ sub _change_group {
     }
     rmdir $temp or croak "rmdir error: $ERRNO";
 
-    my $gid = getgrnam($group);
+    my $gid = getgrnam $group;
     chown -1, $gid, $directory;
+    chmod 0775, $directory;
     # If needed, add 's' to group permission so that
     # a new dir/file has the same group as parent directory
     _set_sgid($directory);
@@ -353,14 +372,12 @@ __PACKAGE__->meta->make_immutable();
 
 __END__
 
-
 =head1 NAME
 
 Monitor::RunFolder::Staging - additional runfolder information specific to
 local staging
 
 =head1 VERSION
-
 
 =head1 SYNOPSIS
 
@@ -385,6 +402,16 @@ script) will be ahead of the number of cycles represented in the staging area.
 This method checks for that and returns a Boolean - true for lag, false for no
 difference between the cycle counts within a limit set by $MAXIMUM_CYCLE_LAG
 
+=head2 is_run_complete
+
+If not a NovaSeq runfolder, it will return true if RTAComplete file is present.
+
+If it is a NovaSeq runfolder will return true if RTAComplete and CopyComplete
+are present or if only RTAComplete is present but has been there for more than
+a timeout limit.
+
+Returns False otherwise.
+
 =head2 validate_run_complete
 
 Perform a series of checks to make sure the run really is complete. Return 0
@@ -405,11 +432,6 @@ also the highest epoch time found.
 
 Confirm number of lanes, cycles and tiles are as expected.
 
-=head2 mark_as_mirrored
-
-Set the current run_status to 'run mirrored'. Create and/or touch the file
-that marks the mirroring as complete.
-
 =head2 move_to_analysis
 
 Move the run folder from 'incoming' to 'analysis'. Then set the run status to
@@ -423,20 +445,11 @@ Returns true if the runfolder is in analysis upstream directory and false othenr
 
 Move the run folder from 'analysis' to 'outgoing'.
 
-=head2 fallback_update
-
-In case there has been a problem with the instrument monitors, do various
-checks and updates in this method as a failsafe.
-
 =head2 tag_delayed
 
 If there is an unacceptable difference between the actual cycles recorded in
 the database and the highest cycle found on the staging area, then this
-tags the run with 
-
-=head2 update_folder
-
-Ensure DB has updated runfolder name and a suitable glob for quickly finding the folder
+tags the run with
 
 =head1 CONFIGURATION AND ENVIRONMENT
 
@@ -478,11 +491,12 @@ Please inform the author of any found.
 
 =head1 AUTHOR
 
-John O'Brien E<lt>jo3@sanger.ac.ukE<gt>
+John O'Brien
+Marina Gourtovaia
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2015 GRL, by John O'Brien
+Copyright (C) 2013,2014,2015,2016,2018,2019,2020 Genome Research Ltd.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

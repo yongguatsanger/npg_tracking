@@ -1,8 +1,5 @@
-#########
-# Author:        rmp
-# Created:       2006-10-31
-#
 package npg::model::instrument;
+
 use strict;
 use warnings;
 use base qw(npg::model);
@@ -19,15 +16,19 @@ use npg::model::annotation;
 use npg::model::instrument_designation;
 use npg::model::designation;
 use DateTime;
+use DateTime::Duration;
+use DateTime::Format::MySQL;
 use List::MoreUtils qw/any/;
 
 our $VERSION = '0';
 
 use Readonly;
-Readonly::Scalar our $HISEQ_INSTR_MODEL => 'HiSeq';
-Readonly::Scalar our $MISEQ_INSTR_MODEL => 'MiSeq';
-Readonly::Scalar our $CBOT_INSTR_MODEL  => 'cBot';
-Readonly::Array  our @FC_SLOT_TAGS    => qw/fc_slotA fc_slotB/;
+
+Readonly::Scalar our $NOVASEQ_INSTR_MODEL => 'NovaSeq';
+Readonly::Scalar our $HISEQ_INSTR_MODEL   => 'HiSeq';
+Readonly::Scalar our $MISEQ_INSTR_MODEL   => 'MiSeq';
+Readonly::Scalar our $CBOT_INSTR_MODEL    => 'cBot';
+Readonly::Array  our @FC_SLOT_TAGS        => qw/fc_slotA fc_slotB/;
 
 Readonly::Array  our @CURRENT_RUNS    => ('run pending', 'run in progress', 'run on hold', 'run complete');
 Readonly::Array  our @BLOCKING_RUNS   => ('run pending', 'run in progress', 'run on hold');
@@ -174,14 +175,9 @@ sub model {
   return $self->instrument_format->model();
 }
 
-sub id_manufacturer {
+sub manufacturer_name {
   my $self = shift;
-  return $self->instrument_format->id_manufacturer();
-}
-
-sub manufacturer {
-  my $self = shift;
-  return $self->instrument_format->manufacturer();
+  return $self->instrument_format->manufacturer_name();
 }
 
 sub runs {
@@ -276,6 +272,20 @@ sub instrument_statuses {
   return $self->{'instrument_statuses'};
 }
 
+sub recent_instrument_statuses {
+  my $self = shift;
+
+  my $earliest = DateTime->now()->subtract(DateTime::Duration->new(years => 1));
+  my @recent = ();
+  foreach my $is (@{$self->instrument_statuses()}) {
+    if (DateTime::Format::MySQL->parse_datetime($is->date()) < $earliest) {
+      last;
+    }
+    push @recent, $is;
+  }
+  return \@recent;
+}
+
 sub current_instrument_mods {
   my $self = shift;
   if(!$self->{current_instrument_mods}) {
@@ -351,22 +361,23 @@ sub latest_annotation {
 
 sub does_sequencing {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model ne $CBOT_INSTR_MODEL);
+  return ($self->instrument_format->model && ($self->instrument_format->model ne $CBOT_INSTR_MODEL));
 }
 
 sub is_two_slot_instrument {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model =~ /\A$HISEQ_INSTR_MODEL/smx);
+  return ($self->instrument_format->model &&
+         ($self->instrument_format->model =~ /$HISEQ_INSTR_MODEL|$NOVASEQ_INSTR_MODEL/smx));
 }
 
 sub is_cbot_instrument {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model eq $CBOT_INSTR_MODEL);
+  return ($self->instrument_format->model && ($self->instrument_format->model eq $CBOT_INSTR_MODEL));
 }
 
 sub is_miseq_instrument {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model eq $MISEQ_INSTR_MODEL);
+  return ($self->instrument_format->model && ($self->instrument_format->model eq $MISEQ_INSTR_MODEL));
 }
 
 sub current_run_by_id {
@@ -647,17 +658,15 @@ Has a side-effect of updating an instrument's current instrument_status to 'wash
 
   my $sModel = $oInstrument->model();
 
-=head2 id_manufacturer - id_manufacturer of this machine, via its instrument_format
+=head2 manufacturer_name - the name of the manufacturer of this instrument
 
-  my $iIdManufacturer = $oInstrument->id_manufacturer();
-
-=head2 manufacturer - npg::model::manufacturer of this machine, via its instrument_format
-
-  my $oManufacturer = $oInstrument->manufacturer();
+  my $oManufacturer = $oInstrument->manufacturer_name();
 
 =head2 instrument_statuses - arrayref of npg::model::instrument_statuses for this instrument
 
   my $arInstrumentStatuses = $oInstrument->instrument_statuses();
+
+=head2 recent_instrument_statuses - arrayref of recent (within a year) npg::model::instrument_statuses for this instrument 
 
 =head2 current_instrument_status - npg::model::instrument_status with iscurrent=1 for this instrument
 
@@ -680,6 +689,7 @@ Has a side-effect of updating an instrument's current instrument_status to 'wash
   my $oAnnotation = $oInstrument->latest_annotation();
 
 =head2 fc_slots2current_runs - a hash reference mapping instrument flowcell slots to current runs; tags for slots are used as keys
+
 =head2 fc_slots2blocking_runs - a hash reference mapping instrument flowcell slots to blocking runs; tags for slots are used as keys
 
 =head2 does_sequencing - returns true is the instrument does sequencing, false otherwise
@@ -754,11 +764,17 @@ returns true if the instrument is a MiSeq, false otherwise
 
 =head1 AUTHOR
 
-Roger Pettett, E<lt>rmp@sanger.ac.ukE<gt>
+=over
+
+=item Roger Pettett, E<lt>rmp@sanger.ac.ukE<gt>
+
+=item Marina Gourtovaia
+
+=back
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2008 GRL, by Roger Pettett
+Copyright (C) 2006,2008,2013,2014,2016,2018,2021 Genome Research Ltd.
 
 This file is part of NPG.
 

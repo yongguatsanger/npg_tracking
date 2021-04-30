@@ -1,16 +1,19 @@
-#########
-# Author:        rmp
-# Created:       2006-10-31
-#
 package npg::model::run;
+
 use strict;
 use warnings;
 use base qw(npg::model Exporter);
 use English qw(-no_match_vars);
-use Scalar::Util qw/isweak weaken/;
+use Scalar::Util qw(isweak weaken);
 use Carp;
 use POSIX qw(strftime);
 use List::MoreUtils qw(none);
+use List::Util qw(first);
+use JSON;
+use DateTime;
+use DateTime::Format::Strptime;
+use Readonly;
+
 use npg::model::instrument;
 use npg::model::instrument_format;
 use npg::model::run_lane;
@@ -23,19 +26,13 @@ use npg::model::entity_type;
 use npg::model::tag_frequency;
 use npg::model::tag_run;
 use npg::model::user;
-use DateTime;
-use DateTime::Format::Strptime;
 use npg::model::run_read;
-use JSON;
-
-use Readonly;
 
 our $VERSION = '0';
 
 Readonly::Scalar our $DEFAULT_SUMMARY_DAYS        => 14;
-Readonly::Scalar our $SCS_VERSION_FIVE_DIGITS_RUN => 2.8;
 Readonly::Scalar my  $FOLDER_GLOB_INDEX           => 2;
-
+Readonly::Scalar my  $PADDING                     => 4;
 Readonly::Hash   our %TEAMS => ('5' => 'joint', '4' => 'RAD', '1' => 'A', '2' => 'B', '3' => 'C',);
 
 __PACKAGE__->mk_accessors(fields());
@@ -58,86 +55,6 @@ sub fields {
             folder_name
             folder_path_glob
            );
-}
-
-sub scs28 {
-  my $self = shift;
-
-  if(! exists $self->{scs28}){
-
-    my $instrument = $self->instrument();
-    if(! $instrument) {
-       $self->{scs28} = 0;
-       return $self->{scs28};
-    }
-    my $instrument_mods = $instrument->instrument_mods;
-    foreach my $mod (@{$instrument_mods}){
-
-      my $des = $mod->instrument_mod_dict->description();
-      my $rev = $mod->instrument_mod_dict->revision();
-
-      my $loader_info = $self->loader_info(1) ||{};
-      my $loading_date = $loader_info->{date};
-      my $scs_date_added = $mod->date_added;
-      my $strptime =DateTime::Format::Strptime->new(pattern => '%Y-%m-%d%t%T');
-      my $loading_date_strptime = $strptime->parse_datetime($loading_date);
-      my $scs_date_added_strptime = $strptime->parse_datetime($scs_date_added);
-
-      if($loading_date_strptime && $scs_date_added && DateTime->compare($loading_date_strptime, $scs_date_added_strptime) < 0){
-          next;
-      }
-
-      if($des eq q{SCS}){
-
-         ($rev)  = $rev =~ /(\d+\.?\d*)/mxs;
-
-         if($self->_cmp_version($rev, $SCS_VERSION_FIVE_DIGITS_RUN) >= 0){
-            $self->{scs28} = 1;
-            return $self->{scs28};
-         }
-      }
-    }
-    $self->{scs28} = 0;
-  }
-  return $self->{scs28};
-}
-
-sub _cmp_version {
-  my ($self, $v1, $v2) = @_;
-
-  my ($whole_v1, $point_v1) = $self->_parse_version($v1);
-  my ($whole_v2, $point_v2) = $self->_parse_version($v2);
-
-  if($whole_v1 > $whole_v2){
-     return 1;
-  }elsif($whole_v1 < $whole_v2){
-     return -1; ## no critic (ValuesAndExpressions::ProhibitMagicNumbers)
-  }
-
-  if($point_v1 > $point_v2){
-    return 1;
-  }elsif($point_v1 < $point_v2){
-    return -1; ## no critic (ValuesAndExpressions::ProhibitMagicNumbers)
-  }
-
-  return 0;
-}
-
-sub _parse_version {
-  my ($self, $v) = @_;
-
-  my ($whole_v, $point_v)  = $v =~ /(\d+)\.?(\d*)/mxs;
-
-  if(!defined $whole_v && !defined $point_v ){
-    croak "Given version number is not valid: $v";
-  }
-
-  $whole_v ||= 0;
-  $point_v ||= 0;
-  $whole_v += 0;
-  $point_v += 0;
-
-  return ($whole_v, $point_v);
 }
 
 sub tags {
@@ -174,16 +91,9 @@ sub init {
 sub name {
   my $self     = shift;
   my $ins_name = $self->instrument->name() || q(unknown);
-  my $id_run_format = q(%s_%05d);
-  my $model = $self->instrument_format->model;
-  if ( $model ) {
-    if ( {'HK'=>1, '1G'=>1}->{$model} and not $self->scs28() ){
-      $id_run_format = q(%s_%04d);
-    }elsif($model eq 'MiSeq'){
-      $id_run_format = q(%s_%d);
-    }
-  }
-  return sprintf $id_run_format, (uc $ins_name), ($self->id_run()||0);
+  my $id_run   = $self->id_run() || 0;
+  my $id_run_format = length($id_run) < $PADDING ? q(%s_%04d) : q(%s_%d);
+  return sprintf $id_run_format, (uc $ins_name), $id_run;
 }
 
 sub run_folder {
@@ -191,8 +101,7 @@ sub run_folder {
   if (my $folder_name = $self->folder_name()) {
     return $folder_name;
   }
-  my $loader_info = $self->loader_info() || {};
-  my $loading_date = $loader_info->{date} || q{0000-00-00};
+  my $loading_date = $self->loader_info->{'date'} || q{0000-00-00};
   my ($year, $month, $day) = $loading_date =~ /\d{2}(\d{2})-(\d{2})-(\d{2})/xms;
   $year  = sprintf '%02d', $year;
   $month = sprintf '%02d', $month;
@@ -309,7 +218,7 @@ sub current_run_status {
   if(!$self->{current_status}) {
     my $util  = $self->util();
     my $pkg   = 'npg::model::run_status';
-    my $query = qq(SELECT @{[join q(, ), map { "rs.$_" } $pkg->fields()]},
+    my $query = qq(SELECT @{[join q(, ), map { join q[.], q[rs], $_ } $pkg->fields()]},
                           rsd.description
                    FROM   @{[$pkg->table]} rs,
                           run_status_dict  rsd
@@ -357,6 +266,30 @@ sub run_statuses {
   }
 
   return $self->{run_statuses};
+}
+
+sub loader_info {
+  my $self  = shift;
+
+  if (!$self->{'loader_info'}) {
+    my $dbh = $self->util->dbh();
+    my $query = q{
+      SELECT u.username    AS loader,
+             DATE(rs.date) AS date
+      FROM   user u,
+             run_status rs,
+             run_status_dict rsd
+      WHERE  rs.id_run = ?
+      AND    rs.id_run_status_dict = rsd.id_run_status_dict
+      AND    rsd.description = 'run pending'
+      AND    rs.id_user = u.id_user
+    };
+    my $sth = $dbh->prepare($query);
+    $sth->execute($self->id_run());
+    my $href = $sth->fetchrow_hashref();
+    $self->{'loader_info'} = $href || {};
+  }
+  return $self->{'loader_info'};
 }
 
 sub attach_annotation {
@@ -427,119 +360,46 @@ sub run_lanes {
 
 sub runs_on_batch {
   my ($self, $batch_id) = @_;
-  $batch_id ||= $self->batch_id();
 
-  if(!$batch_id) {
-    return [];
+  if (defined $batch_id) {
+    my $temp = int $batch_id; # strings will be converted to zeros
+    ($temp eq $batch_id) or croak "Invalid batch id '$batch_id'";
+    ($batch_id > 0) or croak "Invalid negative or zero batch id '$batch_id'";
+  } else {
+    $batch_id = $self->batch_id();
   }
 
-  if(!$self->{runs_on_batch}->{$batch_id}) {
+  my $ids = [];
+  if ($batch_id) { # default batch id for a run is zero
     my $pkg   = 'npg::model::run';
     my $query = qq(SELECT @{[join q(, ), $pkg->fields()]}
                    FROM   @{[$pkg->table()]}
-                   WHERE  batch_id = ?);
-    $self->{runs_on_batch}->{$batch_id} = $self->gen_getarray($pkg, $query, $batch_id);
+                   WHERE  batch_id = ?
+                   ORDER BY id_run asc);
+    $ids = $self->gen_getarray($pkg, $query, $batch_id);
   }
 
-  return $self->{runs_on_batch}->{$batch_id};
+  return $ids;
 }
 
-#########
-# maybe this should be inside run_status.pm?
-#
-sub recent_runs {
-  my $self = shift;
+sub is_batch_duplicate {
+  my ($self, $batch_id) = @_;
 
-  if(!$self->{recent_runs}) {
-    my $days  = $self->{'days'} || $DEFAULT_SUMMARY_DAYS;
-    my $pkg   = ref $self;
-    my $query = qq(SELECT rs.id_run,
-                          r.priority,max(date)
-                   FROM   run_status rs,
-                          run        r
-                   WHERE  rs.date  > DATE_SUB(NOW(), INTERVAL $days DAY)
-                   AND    r.id_run = rs.id_run
-                   GROUP BY rs.id_run
-                   ORDER BY priority,date,id_run);
-    my $seen = {};
+  defined $batch_id or croak 'Batch id should be given';
 
-    my $db_runs = $self->gen_getarray($pkg, $query);
-    my $runs    = [sort { $a->id_run() <=> $b->id_run() }
-                  grep { defined $_ }
-                  map  { ($_, $_->run_pair()?$_->run_pair():undef) } @{$db_runs}];
+  $batch_id or return 0; # if zero, then nothing to compare to
 
-    $self->{recent_runs} = [grep { !$seen->{$_->id_run()}++ &&
-                                    (!$_->run_pair() || !$seen->{$_->run_pair->id_run()}++) }
-                    @{$runs}];
-  }
-  return $self->{recent_runs};
-}
+  my @runs = @{$self->runs_on_batch($batch_id)};
+  my @run_statuses =
+    grep { $_ }
+    map  { $_->current_run_status->run_status_dict->description }
+    @runs;
 
-sub recent_mirrored_runs {
-  my ($self) = @_;
+  (@runs == @run_statuses) or return 1;  # some runs might have no current status
 
-  if(!$self->{recent_mirrored_runs}) {
-    my $days  = $self->{'days'} || $DEFAULT_SUMMARY_DAYS;
-    my $pkg   = ref $self;
-    my $query = qq(SELECT rs.id_run,
-                          r.priority,max(date)
-                   FROM   run_status rs,
-                          run        r,
-                          run_status_dict rsd
-                   WHERE  rs.date               > DATE_SUB(NOW(), INTERVAL $days DAY)
-                   AND    r.id_run              = rs.id_run
-                   AND    rs.id_run_status_dict = rsd.id_run_status_dict
-                   AND    rsd.description       = 'run mirrored'
-                   GROUP BY rs.id_run
-                   ORDER BY priority,date,id_run);
-    my $seen = {};
-
-    my $db_runs = $self->gen_getarray($pkg, $query);
-    my $runs    = [sort { $a->id_run() <=> $b->id_run() }
-                  grep { defined $_ }
-                  map  { ($_, $_->run_pair()?$_->run_pair():undef) } @{$db_runs}];
-
-    $self->{recent_mirrored_runs} = [grep { !$seen->{$_->id_run()}++ &&
-                                           (!$_->run_pair() || !$seen->{$_->run_pair->id_run()}++) }
-                                    @{$runs}];
-  }
-
-  return $self->{recent_mirrored_runs};
-}
-
-sub recent_pending_runs {
-  my ($self, $return_all) = @_;
-  if(!$self->{recent_pending_runs} || $return_all) {
-    my $days  = $self->{'days'} || $DEFAULT_SUMMARY_DAYS;
-    my $pkg   = ref $self;
-    my $query = qq(SELECT rs.id_run,
-                          r.priority,max(date)
-                   FROM   run_status rs,
-                          run        r,
-                          run_status_dict rsd
-                   WHERE  rs.date               > DATE_SUB(NOW(), INTERVAL $days DAY)
-                   AND    r.id_run              = rs.id_run
-                   AND    rs.id_run_status_dict = rsd.id_run_status_dict
-                   AND    rsd.description       = 'run pending'
-                   GROUP BY rs.id_run
-                   ORDER BY priority,date,id_run);
-    my $seen = {};
-
-    my $db_runs = $self->gen_getarray($pkg, $query);
-    if ($return_all) {
-      return $db_runs;
-    } else {
-      my $runs    = [sort { $a->id_run() <=> $b->id_run() }
-                     grep { defined $_ }
-                     map  { ($_, $_->run_pair()?$_->run_pair():undef) } @{$db_runs}];
-
-      $self->{recent_pending_runs} = [grep { !$seen->{$_->id_run()}++ &&
-                                             (!$_->run_pair() || !$seen->{$_->run_pair->id_run()}++) }
-                                           @{$runs}];
-    }
-  }
-
-  return $self->{recent_pending_runs};
+  return scalar
+         grep { $_ !~ /run[ ]cancelled|run[ ]stopped[ ]early/xms }
+         @run_statuses;
 }
 
 sub run_finished_on_instrument {
@@ -657,8 +517,14 @@ sub create {
   $util->transactions(0);
 
   eval {
-    if (!$self->validate_team($self->{team})) { croak 'Invalid team name ' . $self->{team}; }
-    $self->{batch_id}           ||= 0;
+    if (!$self->validate_team($self->{team})) {
+      croak 'Invalid team name ' . $self->{team};
+    }
+    $self->{batch_id} ||= 0;
+    if ($self->is_batch_duplicate($self->{batch_id})) {
+      croak sprintf
+        'Batch %i might have been already used for an active run', $self->{batch_id};
+    }
     $self->{is_paired}          ||= 0;
     $self->{actual_cycle_count} ||= 0;
     $self->{id_instrument_format} = $self->instrument->id_instrument_format();
@@ -838,50 +704,6 @@ sub _create_lanes {
     }
   }
   return 1;
-}
-
-
-sub loader_info {
-  my ($self, $full_date) = @_;
-
-  my $date_format = $full_date ? 'rs.date'
-                  :              'DATE(rs.date)'
-                  ;
-  if(!defined $full_date){
-    $full_date = q{};
-  }
-  if(!$self->{loader_info}->{$full_date}) {
-    my $dbh = $self->util->dbh();
-    my $query = qq{
-      SELECT u.username AS loader,
-             $date_format AS date
-      FROM   user u,
-             run_status rs,
-             run_status_dict rsd
-      WHERE  rs.id_run = ?
-      AND    rs.id_run_status_dict = rsd.id_run_status_dict
-      AND    rsd.description = 'run pending'
-      AND    rs.id_user = u.id_user
-    };
-    my $sth = $dbh->prepare(qq{$query});
-    $sth->execute($self->id_run());
-    my $href = $sth->fetchrow_hashref();
-    $self->{loader_info}->{$full_date} = $href;
-
-    # loader of the read2 reagents is stored as a tag on the run
-    $href->{loaded_r2} = q{};
-    foreach my $tag ( @{ $self->tags() } ) {
-      if ( $tag->tag() eq 'loaded_r2' ) {
-        $href->{r2_loader} = npg::model::user->new({
-          id_user => $tag->{id_user},
-          util => $self->util(),
-        })->username();
-        last;
-      }
-    }
-
-  }
-  return $self->{loader_info}->{$full_date};
 }
 
 sub save_tags {
@@ -1082,56 +904,6 @@ sub potentially_stuck_runs {
   return $self->{potentially_stuck_runs};
 }
 
-sub verified {
-  my ( $self ) = @_;
-
-  if ( $self->{verified} ) {
-    return $self->{verified};
-  }
-
-  my $return_hash = {
-    verified => undef,
-    username => q{},
-  };
-  foreach my $tag ( @{ $self->tags() } ) {
-    if ( $tag->tag() eq 'verified' ) {
-      $return_hash->{verified} = 1;
-      $return_hash->{flowcell} = 1;
-      my $username = npg::model::user->new({
-        id_user => $tag->{id_user},
-        util => $self->util(),
-      })->username();
-      $return_hash->{username} = $username;
-      $return_hash->{user_fc}  = $username;
-    }
-    if ( $tag->tag() eq q{verified_fc} ) {
-      $return_hash->{flowcell} = 1;
-      $return_hash->{user_fc} = npg::model::user->new({
-        id_user => $tag->{id_user},
-        util => $self->util(),
-      })->username();
-    }
-    if ( $tag->tag() eq q{verified_r1} ) {
-      $return_hash->{reagent1} = 1;
-      $return_hash->{user_r1} = npg::model::user->new({
-        id_user => $tag->{id_user},
-        util => $self->util(),
-      })->username();
-    }
-    if ( $tag->tag() eq q{verified_r2} ) {
-      $return_hash->{reagent2} = 1;
-      $return_hash->{user_r2} = npg::model::user->new({
-        id_user => $tag->{id_user},
-        util => $self->util(),
-      })->username();
-    }
-
-  }
-
-  $self->{verified} = $return_hash;
-  return $return_hash;
-}
-
 sub teams {
   my $self = shift;
   return map {$TEAMS{$_}} (sort {$a <=> $b} keys %TEAMS);
@@ -1152,8 +924,61 @@ sub is_dev {
 
 sub staging_server_name {
   my $self = shift;
-  my @components = split m{/}smx, $self->folder_path_glob;
-  return $components[$FOLDER_GLOB_INDEX];
+  if ($self->folder_path_glob) {
+    my @components = split m{/}smx, $self->folder_path_glob;
+    return $components[$FOLDER_GLOB_INDEX];
+  }
+  return;
+}
+
+sub get_instruments {
+  my ($self) = @_;
+
+  if (!defined $self->{instruments}) {
+    croak q(Instrument array is undefined);
+  }
+
+  return $self->{instruments};
+}
+
+sub sort_instruments {
+  my ($self, $instruments)=@_;
+
+  my @current_instruments = sort _compare_alphanumeric @{$instruments};
+
+  my @sorted_instruments;
+  my @nonnv;
+  # move NV to the top
+  foreach my $instrument (@current_instruments){
+    if ($instrument->name =~ /^NV/xms){
+      push @sorted_instruments, $instrument;
+    }else {
+      push @nonnv, $instrument;
+    }
+  }
+  push @sorted_instruments, @nonnv;
+
+  return \@sorted_instruments;
+}
+
+sub _compare_alphanumeric {
+  # separate alphabetic part [0] and numeric part [1]
+  my @a = $a->name =~ m/([a-z]*)([0-9]*)/gixms;
+  my @b = $b->name =~ m/([a-z]*)([0-9]*)/gixms;
+
+  my $return = 0;
+  #compare alphabetic part
+  if (uc $a[0] gt uc $b[0]){
+    $return += 1;
+  }elsif (uc $b[0] gt uc $a[0]){
+    $return -= 1;
+  # if alphabetic parts are identical, compare numeric part
+  }elsif ($a[1] > $b[1]){
+    $return += 1;
+  }else{
+    $return -= 1;
+  }
+  return $return;
 }
 
 1;
@@ -1192,8 +1017,6 @@ npg::model::run
   my $oInstrument = $oRun->instrument();
 
 =head2 hiseq_slot - return slot number of hiseq instrument either A or B, or no slot number
-
-=head2 scs28 - check this run is on an instrument with SCS 2.8 updated 
 
 =head2 instrument_format - npg::model::instrument_format used for this run
 
@@ -1241,20 +1064,25 @@ npg::model::run
 
   my $iRunCount = $oRun->count_runs();
 
-=head2 runs_on_batch - arrayref of npg::model::runs associated with this run's batch_id, or with a given batch_id
+=head2 runs_on_batch
+
+  Returns an array reference of npg::model::run objects associated with batch_id given as
+  an argument or, if the argument is not defined or zero, with this object's batch id if known
+  An empty array is returned if batch id to query on is not defined or if no runs are associated
+  with the batch id.
+
+  Error if batch id is not a positive integer.
 
   my $arRunsOnBatch = $oRun->runs_on_batch();
   my $arRunsOnBatch = $oRootRun->runs_on_batch($iBatchId);
 
   Effectively yields runs performed on the same flowcell
 
-=head2 recent_runs - arrayref of npg::model::runs with recent status changes (< X days ago, default 14)
+=head2 is_batch_duplicate
 
-  my $arRecentRuns = $oRun->recent_runs();
-
-=head2 recent_mirrored_runs - arrayref of npg::model::runs, like 'recent_runs()' but only for 'run mirrored' states
-
-  my $arRecentMirroredRuns = $oRun->recent_mirrored_runs();
+ Given batch id, checks whether an active run associated with this batch id already exists.
+ Active run is defined as a run that has no current status or its current status is not
+ either 'run cancelled' or 'run stopped early'.
 
 =head2 id_user - holder for storing the id_user, particularly for creating new run_status on a new run
 
@@ -1269,7 +1097,13 @@ npg::model::run
   
 =head2 is_paired_read - If paired run, return 1. If single run, check paired_read or single_read tags available or not, then return 1 or 0. For single run without single_read or paired_read tags available, return undef 
 
-=head2 create - support for saving a cascade of run_lanes and a current run_status
+=head2 create
+  Creates a new database record for a run, corresponding database records for run lanes
+  and run tags, assigns the current status of this run to 'run pending'.
+
+  Error if an invalid team is given or if the new run is associated with a batch is that
+  is already associated with an active run as defined in documentation for the
+  is_batch_duplicate method. In case of en error all database changes are rolled back.
 
   $oRun->create();
 
@@ -1279,10 +1113,6 @@ npg::model::run
     'util' => $oUtil,
     'name' => 'IL3_0063',
   });
-
-=head2 loader_info - returns a hashref containing the 'loader' and the 'date' of loading (based on run pending) for the run
-
-  my $hLoaderInfo = $oRun->loader_info();
 
 =head2 tags - returns an arrayref containing tag objects, that have been linked to this run, that also have 'date' the tag was saved for this run, 'id_user' of the person who gave this run this tag, and frequency this tag has been used on runs
 
@@ -1296,7 +1126,6 @@ npg::model::run
 
   eval { $oRun->remove_tags(['tag1','tag2'], $oRequestor); };
 
-=head2 recent_pending_runs
 =head2 run_finished_on_instrument
 =head2 run_folder - returns a run folder name (no HTML formating),
 
@@ -1328,19 +1157,31 @@ return runs which are potentially stuck due to the length of time at their curre
 
 provides a short cut method to the run status dict object providing the description for the current run status
 
-=head2 verified
-
-provides a hash ref with keys verified, flowcell, username and user_fc if verified prior to v60. If post v60, then will return flowcell, user_fc, reagent1, reagent2, user_r1 and user_r2.
-If the run has been verified prior to v60, then verified will be true, and username
-the login of the person who verified the run, post v60, then flowcell, reagent1, reagent2 will be true if they have been verified, and user_fc, user_r1, user_r2 will have the verifying usernames
-
 =head2 teams ordered list of teams
-
-=head2 is_dev method returns true if the run belongs to R&D team, false otherwise
 
 =head2 validate_team
 
+=head2 loader_info
+
+returns a hash containing the date of the run pending status under the 'date' key
+and loader user name under the 'loader' key
+
+=head2 is_dev method returns true if the run belongs to R&D team, false otherwise
+
 =head2 staging_server_name - from runfolder glob
+
+=head2 get_instruments
+
+returns an ArrayRef of instrument objects
+
+  my $instruments = $oRun->get_instruments();
+
+=head2 sort_instruments
+
+returns ArrayRef $instruments sorted by name, with NovaSeq instruments displayed first, or throws an error if
+$instruments is undefined
+
+  my $sorted_instruments = $oRun->sort_instruments($instruments);
 
 =head1 DIAGNOSTICS
 
@@ -1390,7 +1231,7 @@ the login of the person who verified the run, post v60, then flowcell, reagent1,
 
 =item JSON
 
-=item List::MoreUtils qw(none)
+=item List::MoreUtils
 
 =back
 
@@ -1400,11 +1241,17 @@ the login of the person who verified the run, post v60, then flowcell, reagent1,
 
 =head1 AUTHOR
 
-Roger Pettett, E<lt>rmp@sanger.ac.ukE<gt>
+=over
+
+=item Roger Pettett
+
+=item Marina Gourtovaia
+
+=back
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2008 GRL, by Roger Pettett
+Copyright (C) 2006-2012,2013,2014,2015,2016,2017,2020 Genome Research Ltd.
 
 This file is part of NPG.
 

@@ -1,13 +1,13 @@
 use strict;
 use warnings;
-use Test::More tests => 6;
+use Test::More tests => 7;
 use Test::Exception;
 
 my $package = 'npg_tracking::glossary::rpt';
 use_ok($package);
 
 subtest 'rpt string inflate' => sub {
-  plan tests => 13;
+  plan tests => 15;
   
   throws_ok {$package->inflate_rpt()}
     qr/rpt string argument is missing/,
@@ -16,19 +16,19 @@ subtest 'rpt string inflate' => sub {
     qr/rpt string should not contain \';\'/,
     'rpt list delimeter present - error';
   throws_ok {$package->inflate_rpt('456')}
-    qr/Both id_run and position should be available/,
+    qr/Both id_run and position should be defined non-zero values/,
     'no position - error';
   throws_ok {$package->inflate_rpt(':456')}
-    qr/Both id_run and position should be available/,
+    qr/Argument \"\" isn't numeric/,
     'no run id - error';
   throws_ok {$package->inflate_rpt('2::456')} 
-    qr/Both id_run and position should be available/,
+    qr/Argument \"\" isn't numeric/,
     'no position - error';
   throws_ok {$package->inflate_rpt('2:0')}
-    qr/Both id_run and position should be available/,
+    qr/Both id_run and position should be defined non-zero values/,
     'position sero - error';
   throws_ok {$package->inflate_rpt('0:2:4')}
-    qr/Both id_run and position should be available/,
+    qr/Both id_run and position should be defined non-zero values/,
     'run zero - error';  
   is_deeply($package->inflate_rpt('2:11'),
     {id_run=>2, position=>11}, 'correct output');
@@ -40,11 +40,18 @@ subtest 'rpt string inflate' => sub {
   is_deeply($package->inflate_rpt('2:11:4'),
     {id_run=>2, position=>11, tag_index=>4},
     'correct output');
-  lives_ok {$package->inflate_rpt('do:11:da')}
-    'data type is not validated';
-  is_deeply($package->inflate_rpt('do:11:da:extra'),
-    {id_run=>'do', position=>11, tag_index=>'da'},
-    'only the first three cubstrings are taken into account');  
+  throws_ok {$package->inflate_rpt('do:11:4')}
+    qr/Argument \"do\" isn't numeric/,
+    'id_run should be an integer';
+  throws_ok {$package->inflate_rpt('3:do:4')}
+    qr/Argument \"do\" isn't numeric/,
+    'position should be an integer';
+   throws_ok {$package->inflate_rpt('3:4:do')}
+    qr/Argument \"do\" isn't numeric/,
+    'tag_index should be an integer';
+  is_deeply($package->inflate_rpt('2:11:3:extra'),
+    {id_run=>2, position=>11, tag_index=>3},
+    'only the first three substrings are taken into account');  
 };
 
 subtest 'deflate to rpt string' => sub {
@@ -54,16 +61,16 @@ subtest 'deflate to rpt string' => sub {
     qr/Hash or object input expected/,
     'class method needs input';
   throws_ok {$package->deflate_rpt({position=>3})}
-    qr/Either id_run or position key is undefined/,
+    qr/'id_run' key is undefined/,
     'no id_run - error';
   throws_ok {$package->deflate_rpt({id_run=>0,position=>3})}
-    qr/Either id_run or position key is undefined/,
+    qr/'id_run' key is undefined/,
     'zero run id - error';
   throws_ok {$package->deflate_rpt({id_run=>5})}
-    qr/Either id_run or position key is undefined/,
+    qr/'position' key is undefined/,
     'no position - error';
   throws_ok {$package->deflate_rpt({id_run=>5, position=>0})}
-    qr/Either id_run or position key is undefined/,
+    qr/'position' key is undefined/,
     'zero position - error';
   is($package->deflate_rpt({id_run=>5, position=>6}),
     '5:6', 'correct output');
@@ -135,6 +142,14 @@ subtest 'deflate to rpt list string' => sub {
   is($package->deflate_rpts(
     [{id_run=>1, position=>2, tag_index=>3}, {id_run=>5, position=>6}]),
     '1:2:3;5:6', 'correct output for two rpt components');
+};
+
+subtest 'tag_zero_rpt_list' => sub {
+  plan tests => 3;
+
+  is($package->tag_zero_rpt_list('1:2:3;1:3:3'), '1:2:0;1:3:0', 'correct output');
+  is($package->tag_zero_rpt_list('1:2;1:3'), '1:2:0;1:3:0', 'correct output');
+  is($package->tag_zero_rpt_list('1:2:4;1:3'), '1:2:0;1:3:0', 'correct output');
 };
 
 1;

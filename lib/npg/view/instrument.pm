@@ -71,20 +71,6 @@ Readonly::Scalar our $KEY_BLOCK_WIDTH  => 20;
 Readonly::Scalar our $KEY_BLOCK_HEIGHT => 10;
 Readonly::Scalar our $KEY_FONTSIZE     => 24;
 
-sub authorised {
-  my $self   = shift;
-  my $util   = $self->util();
-  my $action = $self->action();
-  my $aspect = $self->aspect();
-  my $requestor = $util->requestor();
-
-  if($aspect eq 'update_statuses' && $requestor->is_member_of('engineers')) {
-    return 1;
-  }
-
-  return $self->SUPER::authorised();
-}
-
 sub new {
   my ($class, @args) = @_;
   my $self  = $class->SUPER::new(@args);
@@ -151,42 +137,6 @@ sub list_edit_statuses {
 
   return $self->list(@args);
 }
-
-sub update_statuses {
-  my $self  = shift;
-  my $model = $self->model();
-  my $util  = $self->util();
-  my $cgi   = $util->cgi();
-
-  if($model->name() ne 'group') {
-    return;
-  }
-
-  my @id_instruments = $cgi->param('id_instrument');
-  my $iisd           = $cgi->param('id_instrument_status_dict');
-  my $id_user        = $util->requestor->id_user();
-  my $comment        = $cgi->param('comment') || q();
-
-  if(!$comment) {
-    $self->add_warning('No comment given');
-    $self->aspect('list_edit_statuses');
-    return $self->list_edit_statuses();
-  }
-
-  for my $id_instrument (@id_instruments) {
-    my $is = npg::model::instrument_status->new({
-             util                      => $util,
-             id_instrument             => $id_instrument,
-             id_instrument_status_dict => $iisd,
-             id_user                   => $id_user,
-             comment                   => $comment,
-            });
-    $is->create();
-  }
-
-  return 1;
-}
-
 
 sub read { ## no critic (ProhibitBuiltinHomonyms)
   my $self    = shift;
@@ -446,15 +396,6 @@ sub read_png { ## no critic (Subroutines::ProhibitExcessComplexity)
   my $x_start = int ($width - $src_width)/2;
   $im->copy($src, $x_start, 0, 0, 0, $src_width, $src_height);
 
-  # if instrument has not been connected to  th threshold duration add disconnect icon
-  if ( my $lc=$model->latest_contact) {
-    if (DateTime::Format::MySQL->parse_datetime($lc)->add(minutes=> $ALERT_MINUTES_THRESHOLD) < DateTime->now()) {
-      my $im_fn_ds  = sprintf q(%s/gfx/disconnect.png), $util->data_path();
-      my $src_ds    = GD::Image->newFromPng($im_fn_ds);
-      $im->copy($src_ds, $im->width - $src_ds->width - $ALERT_MARGIN , $Y_ALERT, 0,0,$src_ds->width,$src_ds->height);
-    }
-  }
-
   # if current_runs have copying_problem tag add drive error icon
   if (my @r = @{$model->current_runs}) {
     if (any {$_->has_tag_with_value(q(copying_problem))} @r) {
@@ -478,7 +419,7 @@ sub read_png { ## no critic (Subroutines::ProhibitExcessComplexity)
   }
 
    # display instrument model name
-   my $instr_annot_x = $is2slot ? 45 : $is_ms ? -10 : 0;
+   my $instr_annot_x = $is2slot ? 36 : $is_ms ? -10 : 0;
    $instr_annot_x += $INS_NAME_VALUE_ONE;
    my $instr_annot_y = $is2slot ? -7 : $is_ms ? -7 : 0;
    $instr_annot_y += $INS_NAME_VALUE_TWO;
@@ -623,8 +564,6 @@ npg::view::instrument - view handling for instruments
 =head2 list_edit_statuses - batch instrument_status listing/form
 
 =head2 list_textual - basic text listing
-
-=head2 update_statuses - batch instrument_status update (form action)
 
 =head1 DIAGNOSTICS
 

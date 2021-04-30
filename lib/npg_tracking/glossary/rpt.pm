@@ -65,12 +65,23 @@ sub inflate_rpt {
   foreach my $key (qw(id_run position tag_index)) {
     my $v = shift @values;
     if (defined $v) {
-      $map->{$key} = $v;
+
+      # The value is a string at this point, which does not cause any
+      # visible problems downstream. However, if the resulting hash
+      # is used in a database query, the query will run twice slower
+      # (tested on MySQL v5.7) since DBIx does not cast the values
+      # before sending them to a database. We will convert to int here.
+      {
+        # We want an error if casting did not go well.
+        # The scope for this fatal warning is constrained.
+        use warnings FATAL => qw(numeric);
+        $map->{$key} = int $v;
+      }
     }
   }
 
   if (!$map->{'id_run'} || !$map->{'position'}) {
-    croak 'Both id_run and position should be available';
+    croak 'Both id_run and position should be defined non-zero values';
   }
 
   return $map;
@@ -101,35 +112,25 @@ id_run and position accessors/keys.
 sub deflate_rpt {
   my ($self, $rpt) = @_;
 
-  if (!$rpt) {
-    $rpt = $self;
-  }
-  if (!ref $rpt) {
+  $rpt ||= $self;
+  my $type = ref $rpt;
+  if (not $type) {
     croak 'Hash or object input expected';
   }
 
-  my $h = {};
-
-  for my $attr (qw/id_run position tag_index/) {
-    if (ref $rpt eq 'HASH') {
-      $h->{$attr} = $rpt->{$attr};
-    } else {
-      if ($rpt->can($attr)) {
-        $h->{$attr} = $rpt->$attr;
-      }
-    }
+  my $is_hash = $type eq 'HASH';
+  my @rpt_components = ();
+  for my $attr (qw/id_run position/) {
+    my $value = $is_hash ? $rpt->{$attr} : $rpt->$attr;
+    $value or croak qq['$attr' key is undefined];
+    push @rpt_components, $value;
   }
+  my $attr = 'tag_index';
+  push @rpt_components, $is_hash
+                        ? $rpt->{$attr}
+                        : ($rpt->can($attr) ? $rpt->$attr : undef);
 
-  if (!$h->{'id_run'} || !$h->{'position'}) {
-    croak 'Either id_run or position key is undefined';
-  }
-
-  my @rpt_components = ($h->{'id_run'}, $h->{'position'});
-  if (defined $h->{'tag_index'}) {
-    push @rpt_components, $h->{'tag_index'};
-  }
-
-  return join $RPT_KEY_DELIM, @rpt_components;
+  return join $RPT_KEY_DELIM, grep { defined } @rpt_components;
 }
 
 =head2 split_rpts
@@ -196,6 +197,28 @@ sub deflate_rpts {
   return __PACKAGE__->join_rpts(map { $self->deflate_rpt($_) } @{$rpts});
 }
 
+=head2 tag_zero_rpt_list
+
+Converts the argument rpt_list into an rpt_list for tag zero components
+
+  my $s = __PACKAGE__->tag_zero_rpt_list('1:2:3;1:3:3');
+  print $s; # 1:2:0;1:3:0
+
+  $s = __PACKAGE__->tag_zero_rpt_list('1:2;1:3');
+  print $s; # 1:2:0;1:3:0
+
+  $s = __PACKAGE__->tag_zero_rpt_list('1:2;1:2:6');
+  print $s; # 1:2:0;1:2:0 - Be warned!
+
+=cut
+sub tag_zero_rpt_list {
+  my ($self, $rpt_list) = @_;
+  ##no critic (BuiltinFunctions::ProhibitComplexMappings)
+  return __PACKAGE__->join_rpts(map { __PACKAGE__->deflate_rpt($_) }
+                                map { $_->{'tag_index'} = 0; $_ }
+                                @{__PACKAGE__->inflate_rpts($rpt_list)} );
+}
+
 no Moose;
 
 1;
@@ -227,7 +250,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2015 GRL
+Copyright (C) 2015,2017,2018,2021 Genome Research Ltd.
 
 This file is part of NPG.
 

@@ -54,7 +54,7 @@ a list of samples.
 =cut
 
 
-Readonly::Scalar our $ALIGNER          => q[bwa];
+Readonly::Scalar our $ALIGNER          => q[fasta]; # so default is fasta and not one particular aligner's reference 
 Readonly::Scalar our $STRAIN           => q[default];
 Readonly::Scalar our $SUBSET           => q[all];
 Readonly::Scalar our $PHIX             => q[PhiX];
@@ -117,17 +117,6 @@ sub _build_strain {
   }
   return $STRAIN;
 }
-
-=head2 subset
-
-Subset (i.e., chromosome), defaults to all
-
-=cut
-has 'subset'=>    (isa             => 'Str',
-                   is              => 'ro',
-                   required        => 0,
-                   default         => $SUBSET,
-                  );
 
 =head2 aligner
 
@@ -220,10 +209,15 @@ sub refs {
   }
 
   if ($self->species) {
-    push @refs, $self->_get_reference_path($self->species, $self->strain);
+    @refs = map { _abs_ref_path($_) }
+            ($self->_get_reference_path($self->species, $self->strain));
   } else {
 
     my $spiked_phix_index = $MINUS_ONE;
+    #####
+    # The below condition should have included a case of compositions.
+    # However, spiked_phix_tag_index attribute is not defined for
+    # compositions, so would not have worked anyway.
     if ($self->lims->is_pool && !($self->can(q(tag_index)) && $self->tag_index) && $self->lims->spiked_phix_tag_index) {
       $spiked_phix_index = $self->lims->spiked_phix_tag_index;
     }
@@ -242,31 +236,18 @@ sub refs {
       }
     }
     @refs = keys %{$ref_hash};
+    #####
+    # This makes sure that for compositions spiked Phix
+    # reference is not returned as one of many possible references.
+    # If spiked PhiX is the only reference available, then
+    # it is returned. Practically speaking, we do not want PhiX
+    # reference returned for compositions containing tag zero.
+    if ($self->lims->is_composition && (@refs > 1)) {
+      @refs = grep { not /$PHIX/smx } @refs;
+    }
   }
-  @refs = map {_abs_ref_path($_)} @refs;
+
   return \@refs;
-}
-
-=head2 single_ref_found
-
-Returns true if only one reference has been found.
-Returns false if no references found or multiple references found.
-
-=cut
-sub single_ref_found {
-
-  my $self = shift;
-  carp 'This method is deprecated. Please use the refs method and evaluate the size of the returned array.';
-
-  my @refs;
-  eval {
-    @refs = @{$self->refs()};
-    1;
-  } or do {
-    return 0;
-  };
-  if (!@refs || scalar @refs > 1) { return 0; }
-  return 1;
 }
 
 
@@ -345,15 +326,12 @@ sub _get_reference_path {
   $strain = $strain || $self->strain;
 
   # check that the directory for the chosen aligner exists
-  my $base_dir = catfile($self->ref_repository, $organism, $strain, $self->subset);
+  my $base_dir = catfile($self->ref_repository, $organism, $strain, $SUBSET);
   my $dir = catfile($base_dir, $self->aligner);
 
   if (!-e $dir) {
-    ##no critic (ProhibitInterpolationOfLiterals)
-    my $message = sprintf "Binary %s reference for %s, %s, %s does not exist; path tried %s",
-        $self->aligner, $organism, $strain, $self->subset, $dir;
-    ##use critic
-    croak $message;
+    croak sprintf 'Binary %s reference for %s, %s does not exist; path tried %s',
+        $self->aligner, $organism, $strain, $dir;
   }
 
   # read the fasta directory and get the file name with the reference
@@ -400,22 +378,35 @@ sub lims2ref {
 =head2 parse_reference_genome
 
 Parses LIMs notation for reference genome, returns a list containing
-an organism, strain (genome version) and, optionally,
-a transcriptome version or an empty list.
+an organism, strain (genome version) and, optionally, a transcriptome
+version and/or a word indicating the type of analysis to be run.
 
 =cut
 sub parse_reference_genome {
-  my ($self, $reference_genome) = @_;
-  $reference_genome ||= $self->reference_genome;
-  if ($reference_genome) {
-     ##also allows for transcriptome version e.g. 'Homo_sapiens (1000Genomes_hs37d5 + ensembl_release_75)'
-     my @a = $reference_genome  =~/  (\S+) \s+ [(]  (\S+) (?: \s+ \+ \s+ (\S+) )? [)]  /smx;
-     if (scalar @a >= 2 && $a[0] && $a[1]) {
-        if (! $a[2]) { $#a = 1; }
-        return @a;
-     }
-  }
-  return;
+    my ($self, $reference_genome) = @_;
+    $reference_genome ||= $self->reference_genome;
+    if ($reference_genome) {
+        my ($organism, $strain, $tversion, $analysis, @array);
+        ## allows for transcriptome version and analysis e.g. 'Homo_sapiens (1000Genomes_hs37d5 + ensembl_release_75) [star]'
+        $organism = '(?<organism>\S+)\s+';
+        $strain = '(?<strain>\S+)';
+        $tversion = '(?:\s+\+\s+(?<tversion>\S+))?';
+        $analysis = '(?:\s+[[](?<analysis>\S+)[]])?';
+        $reference_genome  =~ qr{$organism [(] $strain $tversion [)] $analysis}smx;
+        $organism = $LAST_PAREN_MATCH{'organism'};
+        $strain = $LAST_PAREN_MATCH{'strain'};
+        $tversion = $LAST_PAREN_MATCH{'tversion'};
+        $analysis = $LAST_PAREN_MATCH{'analysis'};
+        if ($organism && $strain) {
+            if ($tversion || $analysis) {
+                @array = ($organism, $strain, $tversion, $analysis);
+            } else {
+                @array = ($organism, $strain);
+            }
+            return @array;
+        }
+    }
+    return;
 }
 
 sub _preset_ref2ref_path {
@@ -480,7 +471,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2016 GRL
+Copyright (C) 2017 GRL
 
 This file is part of NPG.
 

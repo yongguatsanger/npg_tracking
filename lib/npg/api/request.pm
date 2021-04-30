@@ -48,6 +48,7 @@ Readonly::Scalar our $SAVE2CACHE_VAR_NAME => q[SAVE2NPG_WEBSERVICE_CACHE];
 Readonly::Scalar our $MAX_RETRIES          => 10;
 Readonly::Scalar our $RETRY_DELAY          => 10;
 Readonly::Scalar our $LWP_TIMEOUT          => 60;
+Readonly::Scalar our $LWP_TIMEOUT_POST     => $LWP_TIMEOUT * 2;
 Readonly::Scalar our $DEFAULT_METHOD       => q[GET];
 Readonly::Scalar our $DEFAULT_CONTENT_TYPE => q[text/xml];
 
@@ -208,10 +209,10 @@ sub make {
 sub _create_path {
   my ( $self, $url ) = @_;
 
-  my ($stpath)  = $url =~ m{\Ahttps?://(?:dev\.)?
+  my ($stpath)  = $url =~ m{\Ahttps?://(?:(?:dev|sequencescape)\.)?
                             psd.*
-                            \.sanger\.ac\.uk?(?::\d+)
-                            (.*?)\z}xms; # sequencescape path
+                            \.sanger\.ac\.uk?(?::\d+)?
+                            (/.*?)\z}xms; # sequencescape path
   ##no critic(ProhibitComplexRegexes)
   my ($npgpath) = $url =~ m{\Ahttps?://
                             (?:npg|sfweb|sf2-farm-srv1)
@@ -298,6 +299,7 @@ sub _from_web {
         $req = GET $uri, @{$args||[]};
     } else {
         $req = POST $uri, @{$args||[]};
+        $self->useragent()->timeout($LWP_TIMEOUT_POST);
     }
     if ($self->content_type) {
         $req->header('Accept' => $self->content_type);
@@ -467,7 +469,7 @@ Marina Gourtovaia
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2010 GRL, by Marina Gourtovaia
+Copyright (C) 2010,2020 Genome Research Ltd. by Marina Gourtovaia
 
 This file is part of NPG.
 

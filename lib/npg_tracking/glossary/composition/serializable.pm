@@ -7,6 +7,8 @@ use Digest::SHA qw/sha256_hex/;
 use Digest::MD5 qw/md5_hex/;
 use Carp;
 use Readonly;
+use Class::Load qw/load_class/;
+use List::MoreUtils qw/uniq/;
 
 use npg_tracking::glossary::rpt;
 
@@ -15,37 +17,84 @@ requires 'unpack';
 
 our $VERSION = '0';
 
-Readonly::Scalar my $COMPONENTS_ATTR_NAME => 'components';
+Readonly::Scalar my $COMPONENTS_ATTR_NAME    => 'components';
+Readonly::Scalar my $COMPONENT_CLASS         => 'component_class';
+Readonly::Scalar my $ENFORCE_COMPONENT_CLASS => 'enforce_component_class';
+Readonly::Scalar my $FREEZE_WITH_CLASS_NAMES => 'with_class_names';
+Readonly::Scalar my $CLASS_NAME_KEY          => '__CLASS__';
 
 sub thaw {
   my ( $class, $json, @args ) = @_;
-  if (!$json) {
-    croak 'JSON string is required';
+
+  my $h = JSON::XS->new()->decode($json);
+
+  my $component_class;
+  my $enforce_component_class = 0;
+  if (@args && scalar @args % 2 == 0) {
+    my %ah = @args;
+    $component_class = delete $ah{$COMPONENT_CLASS};
+    my $tmp          = delete $ah{$ENFORCE_COMPONENT_CLASS};
+    if (defined $tmp) {
+      $enforce_component_class = $tmp;
+    }
+    @args = %ah;
   }
-  return $class->unpack( JSON::XS->new()->decode($json), @args );
+
+  #####
+  # JSON string is a serialized composition or component object.
+  #
+  if ( $h->{$COMPONENTS_ATTR_NAME} ) {
+    my @classes = ();
+    foreach my $component_h ( @{$h->{$COMPONENTS_ATTR_NAME}} ) {
+
+      my $cclass = $component_h->{$CLASS_NAME_KEY};
+      $cclass ||= q();
+      #####
+      # The class name might be concatenated with package version.
+      # A dash is used for concatenation. No way to know whether
+      # this dash is not a part of the package name, meaning that
+      # component classes should not have dashes in their package
+      # name.
+      #
+      ($cclass) = split /-/smx, $cclass;
+
+      if ($cclass) {
+        if ($component_class && $enforce_component_class
+            && ($component_class ne $cclass)) {
+          croak "Unexpected component class $cclass";
+        }
+      } elsif ($component_class) {
+        $cclass = $component_class;
+      } else {
+        croak "Component class unknown, try defining via $COMPONENT_CLASS option";
+      }
+      $component_h->{$CLASS_NAME_KEY} = $cclass;
+      push @classes, $cclass;
+    }
+    for my $class_name (uniq @classes) {
+      load_class $class_name;
+    }
+  }
+
+  return $class->unpack( $h, @args );
 }
 
 sub freeze {
-  my $self = shift;
-  if ( $self->can('sort') ) {
-    $self->sort();
+  my ($self, @args) = @_;
+
+  if (@args && (@args != 2 || $args[0] ne $FREEZE_WITH_CLASS_NAMES)) {
+    croak "Options not recognised, allowed option - $FREEZE_WITH_CLASS_NAMES";
   }
-  return JSON::XS->new()->canonical(1)->encode( $self->_pack_custom() );
+  return JSON::XS->new()->canonical(1)->encode(
+    (@args && $args[1]) ? $self->pack() : $self->_pack_custom() );
 }
 
 sub freeze2rpt {
   my $self = shift;
-
-  my $values = $self->_pack_custom();
-  my $rpt_string;
-  if ($values->{$COMPONENTS_ATTR_NAME}) {
-    $rpt_string = npg_tracking::glossary::rpt
-                    ->deflate_rpts($values->{$COMPONENTS_ATTR_NAME});
-  } else {
-    $rpt_string = npg_tracking::glossary::rpt->deflate_rpt($values);
-  }
-
-  return $rpt_string;
+  my @rpts = map { npg_tracking::glossary::rpt->deflate_rpt($_) }
+             (ref $self eq 'npg_tracking::glossary::composition') ?
+             $self->components_list() : ($self);
+  return npg_tracking::glossary::rpt->join_rpts(@rpts);
 }
 
 sub digest {
@@ -64,28 +113,23 @@ sub _pack_custom {
   return _clean_pack($self->pack());
 }
 
-sub _clean_pack { # Recursive function
+sub _clean_pack {
   my $old = shift;
 
-  my $type = ref $old;
-  if (!$type || $type ne 'HASH') {
-    return $old;
+  # Do not pack the __CLASS__ key and other private attributes.
+  # Do not pack undefined attributes.
+  # Recurse for components.
+  my %packed = map  { $_ => $old->{$_} }
+               grep { defined $old->{$_} }
+               grep { not m{\A _}smx }
+               keys %{$old};
+  if (exists $packed{$COMPONENTS_ATTR_NAME}) {
+    $packed{$COMPONENTS_ATTR_NAME} = [
+      (map { _clean_pack($_) } @{$packed{$COMPONENTS_ATTR_NAME}})
+                                     ];
   }
 
-  my $values = {};
-  while ( my ($k, $v) = each %{$old} ) {
-     # Delete __CLASS__ key along with private attrs
-    if (defined $v && $k !~ /\A_/smx) {
-      # Treat components the same way
-      if (ref $v eq 'ARRAY' && $k eq $COMPONENTS_ATTR_NAME) {
-        my @clean = map { _clean_pack($_) } @{$v};
-        $v = \@clean;
-      }
-      $values->{$k} = $v;
-    }
-  }
-
-  return $values;
+  return \%packed;
 }
 
 no Moose::Role;
@@ -129,27 +173,98 @@ npg_tracking::glossary::composition::serializable
 
 =head1 DESCRIPTION
 
-Custom JSON serialization format for MooseX::Storage framework.
-Differences with MooseX::Storage::Format::JSON:
-  - uses JSON::XS directly,
-  - private attributes are not serialized,
-  - the output does not contain the __CLASS__ key,
-  - the above applies recursively to an array reference attribute called
-    'components'.
+L<npg_tracking::glossary::composition> objects and component objects
+that make up a composition use the L<MooseX::Storage> serialization
+framework to enable serialization to (freeze) and from (thaw) JSON
+strings. This Moose role provides custom JSON serialization format
+for MooseX::Storage framework by implementing custom C<freeze> and
+C<thaw> methods. The role also provides other custom serialization
+formats, which are used by NPG pipelines and other applications.
+
+=head2 Serialization to JSON
+
+Differences with L<MooseX::Storage::Format::JSON>:
+
+=over
+
+=item Uses JSON::XS.
+
+=item Produces canonical (sorted) JSON strings.
+
+=item Private attributes are not serialized.
+
+=item The C<__CLASS__> key is not serialized.
+
+=item The above applies recursively to members of an array reference
+      attribute called C<components>, which can contain objects of any
+      class as long as these classes consume the
+      L<npg_tracking::glossary::composition::component> role.
+
+=back
+
+=head2 Serialization to an rtp string.
+
+A lossy conversion to a concise text string, which can be used as a
+convenient human-readable id in web applications and command line arguments.
+This type of serialization is specific to the
+L<npg_tracking::glossary::composition::component::illumina> class. It
+disregards the value of the C<subset> attribute of the object. See
+L<npg_tracking::glossary::rpt> for details.
+
+=head2 Serialization to unique 64- or 32-long character strings
+
+This is a one-way serialization that is possible for any type of the
+component. It produces fixed length strings that are unique to a particular
+component or composition object and are guaranteed not to clash. The
+computation of the string is deterministic. These strings are widely used
+in NPG applications as unique identifiers for pipelines' inputs and outputs
+and as the common part of files names in cases of complex provenance of
+the files, see L<npg_tracking::glossary::moniker> for details.
 
 =head1 SUBROUTINES/METHODS
 
 =head2 thaw
 
-Instantiates an object from a json string.
+Instantiates an object from a JSON string.
 
-  my $p = my::package->thaw($json);
+  my $c = my::package->thaw($json);
+
+If the JSON string does not contain class names of some or all components,
+the default thaw method fails. The component class to use where it's
+missing can be supplied.
+
+  my $c = my::package->thaw(
+    $json,
+    component_class => 'npg_tracking::glossary::composition::component::illumina');
+
+If the enforce_component_class option is set to true, an error is reaised
+if the class of any of the components is defined and is different from the
+supplied component class.
+
+  my $c = my::package->thaw(
+    $json,
+    enforce_component_class => 1,
+    component_class => 'npg_tracking::glossary::composition::component::illumina');
 
 =head2 freeze
 
-Serializes object's public attributes to a canonical (ordered) json string.
+Serializes object's public attributes to a canonical (ordered) JSON string.
 
   $p->freeze();
+
+Example output:
+
+  {"components":[{"id_run":27081,"position":1,"subset":"phix","tag_index":0}]}
+
+This string does not contain class names of the components and, therefore,
+cannot be deserialized without additional options passed to the thaw method.
+For a more conventional serialization set with_class_names to a true value.
+
+ $p->freeze(with_class_names => 1);
+
+Example output:
+
+ {"__CLASS__":"npg_tracking::glossary::composition","components":[{"__CLASS__":"npg_tracking::glossary::composition::component::illumina","id_run":27081,"position":1,"subset":"phix","tag_index":0}]}
 
 =head2 freeze2rpt
 
@@ -198,6 +313,8 @@ Returns a digest of an input string.
 
 =item Readonly
 
+=item List::MoreUtils
+
 =item npg_tracking::glossary::rpt
 
 =back
@@ -212,7 +329,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2016 GRL
+Copyright (C) 2015,2016,2018,2021 Genome Research Ltd.
 
 This file is part of NPG.
 

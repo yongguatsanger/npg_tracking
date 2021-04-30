@@ -25,7 +25,7 @@ my $class = WTSI::DNAP::Utilities::Build->subclass(code => <<'EOF');
 
   sub process_htdocs_files {
     my $self = shift;
-    my $files = $self->rscan_dir('htdocs', sub {-f $_ and (/\.css$/ or /\.js$/)});
+    my $files = $self->rscan_dir('htdocs', sub { -f $_ and /\.(:? css | js | png | gif ) $/smx });
     foreach my $f (@{$files}) {
       $self->copy_if_modified(
         from    => $f,
@@ -85,10 +85,16 @@ my $builder = $class->new(
                 'Module::Build'                   => '>= 0.42',
           },
 
+          'test_requires' => {
+                'Test::Compile'                   => '< 1.4',
+          },
+
           'build_requires' => {
                 'ExtUtils::CBuilder'              => 0,
+                'Archive::Tar'                    => 0,
                 'DateTime::Duration'              => 0,
                 'DateTime::Format::SQLite'        => 0,
+                'HTTP::Headers'                   => 0,
                 'IO::File'                        => 0,
                 'IPC::Open2'                      => 0,
                 'List::Util'                      => 0,
@@ -96,7 +102,6 @@ my $builder = $class->new(
                 'Test::Distribution'              => 0,
                 'Test::Deep'                      => '0.103',
                 'Test::Exception'                 => '0.27',
-                'Test::Exception::LessClever'     => '0.005',
                 'Test::LongString'                => 0,
                 'Test::MockModule'                => 0,
                 'Test::MockObject'                => 0,
@@ -119,12 +124,8 @@ my $builder = $class->new(
                 'Class::Accessor'                 => '0.31',
                 'Class::Load'                     => 0,
                 'Class::Std'                      => '0.0.8',
-                'ClearPress::controller'          => '300',
-                'ClearPress::decorator'           => '279',
-                'ClearPress::model'               => '300',
-                'ClearPress::util'                => '300',
-                'ClearPress::view'                => '300',
-                'ClearPress::view::error'         => '279',
+                'ClearPress'                      => '>= 473.3.3',
+                'Config::Any'                     => 0,
                 'Config::Auto'                    => 0,
                 'Crypt::CBC'                      => 0,
                 'Cwd'                             => 0,
@@ -156,12 +157,8 @@ my $builder = $class->new(
                 'File::Type'                      => '0.22',
                 'File::Temp'                      => 0,
                 'File::chdir'                     => 0,
+                'File::stat'                      => 0,
                 'GD'                              => '2.35',
-                'GD::Graph::area'                 => '1.17',
-                'GD::Graph::bars'                 => '1.26',
-                'GD::Graph::lines'                => '1.15',
-                'GD::Graph::mixed'                => '1.13',
-                'GD::Image'                       => 0,
                 'GD::Text'                        => 0,
                 'Getopt::Long'                    => '2.37',
                 'HTML::PullParser'                => '3.57',
@@ -170,7 +167,6 @@ my $builder = $class->new(
                 'HTTP::Request::Common'           => '5.822',
                 'HTTP::Response'                  => 0,
                 'IO::All'                         => '0.39',
-                'IO::All::FTP'                    => 0,
                 'IO::Scalar'                      => '2.110',
                 'IPC::System::Simple'             => 0,
                 'JSON'                            => '2.12',
@@ -182,6 +178,7 @@ my $builder = $class->new(
                 'Log::Log4perl'                   => 0,
                 'LWP::UserAgent'                  => '5.823',
                 'Math::Round'                     => '0.06',
+                'Math::Random::Secure'            => 0,
                 'MIME::Base64'                    => 0,
                 'MIME::Lite'                      => '3.024',
                 'MIME::Parser'                    => '5.427',
@@ -212,17 +209,22 @@ my $builder = $class->new(
                 'Socket'                          => 0,
                 'strict'                          => '1.03',
                 'SQL::Translator'                 => '0.11006',
+                'Sys::Filesystem'                 => 0,
+                'Sys::Filesystem::MountPoint'     => 0,
                 'Sys::Hostname'                   => '1.11',
                 'Template'                        => '2.19',
                 'Try::Tiny'                       => 0,
-                'URI'                             => '1.37',
                 'URI::Escape'                     => 0,
+                'URI::URL'                        => 0,
                 'utf8'                            => 0,
                 'warnings'                        => '1.05',
                 'XML::Generator'                  => '1.01',
                 'XML::LibXML'                     => '1.70',
-                'XML::Simple'                     => '2.18',
                 'YAML'                            => '0.68',
+                'YAML::XS'                        => 0,
+
+                'WTSI::DNAP::Utilities::Loggable'  => '>= 0.5.3',
+                'WTSI::DNAP::Utilities::Timestamp' => '0',
             },
          );
 

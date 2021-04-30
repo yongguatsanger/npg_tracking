@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 54;
+use Test::More tests => 55;
 use Test::Exception;
 use File::Spec::Functions qw(splitpath catfile);
 use Cwd qw(cwd);
@@ -53,12 +53,12 @@ use_ok('npg_tracking::data::reference');
   lives_ok {$ruser = npg_tracking::data::reference->new(repository => $repos)}
     'can create object without any lims ids';
   throws_ok {$ruser->refs()}
-    qr/Either id_run or position key is undefined/,
+    qr/'id_run' key is undefined/,
     '... however, cannot get a reference';
   lives_ok {$ruser = npg_tracking::data::reference->new(id_run => 1, repository => $repos)}
     'can create object with id_run only';
   throws_ok {$ruser->refs()}
-    qr/Either id_run or position key is undefined/,
+    qr/'position' key is undefined/,
     '... however, cannot get a reference';  
 }
 
@@ -76,39 +76,39 @@ use_ok('npg_tracking::data::reference');
   is ($ruser->messages->count, 0, 'no messages');
 
   $ruser = npg_tracking::data::reference->new(
-    position => 8, id_run => 1937, repository => $repos, aligner => q[bwa]);
-  is( pop @{$ruser->refs}, catfile($repos, 'references/PhiX/default/all/bwa/phix-illumina.fa'),
+    position => 8, id_run => 1937, repository => $repos, aligner => q[bwa0_6]);
+  is( pop @{$ruser->refs}, catfile($repos, 'references/PhiX/default/all/bwa0_6/phix-illumina.fa'),
     'phix reference for bwa explicitly');
   is ($ruser->messages->count, 0, 'no messages');
 
   $ruser = npg_tracking::data::reference->new(position   => 8,
                                               id_run     => 1937, 
                                               repository => $repos,
-                                              aligner    => q[bwa],
+                                              aligner    => q[bwa0_6],
                                               species    => q[Human]
                                              );
-  is( $ruser->refs->[0], catfile($repos, q[references/Human/NCBI36/all/bwa/someref.fa]),
+  is( $ruser->refs->[0], catfile($repos, q[references/Human/NCBI36/all/bwa0_6/someref.fa]),
     'human reference overwrite when species is set');
 
   $ruser = npg_tracking::data::reference->new(position         => 8,
                                               id_run           => 1937, 
                                               repository       => $repos,
-                                              aligner          => q[bwa],
+                                              aligner          => q[bwa0_6],
                                               reference_genome => q[Human (NCBI36)]
                                              );
   is ($ruser->species, q[Human], 'species is human');
   is ($ruser->strain, q[NCBI36], 'strain is NCBI36');
-  is( $ruser->refs->[0], catfile($repos, q[references/Human/NCBI36/all/bwa/someref.fa]),
+  is( $ruser->refs->[0], catfile($repos, q[references/Human/NCBI36/all/bwa0_6/someref.fa]),
     'human reference overwrite when reference_genome is set');
 }
 
 {
-  my $ruser = npg_tracking::data::reference->new(position => 8, id_run => 1937, repository => $repos);
-  is( pop @{$ruser->refs}, catfile($repos, 'references/PhiX/default/all/bwa/phix-illumina.fa'),
+  my $ruser = npg_tracking::data::reference->new(aligner=>q[bwa0_6], position => 8, id_run => 1937, repository => $repos);
+  is( pop @{$ruser->refs}, catfile($repos, 'references/PhiX/default/all/bwa0_6/phix-illumina.fa'),
     'phix reference for lane 8');
   is( $ruser->messages->count, 0, 'no messages');
-  $ruser = npg_tracking::data::reference->new(position => 4, id_run => 1937, repository => $repos);
-  is( pop @{$ruser->refs}, catfile($repos, 'references/PhiX/default/all/bwa/phix-illumina.fa'),
+  $ruser = npg_tracking::data::reference->new(aligner=>q[bwa0_6], position => 4, id_run => 1937, repository => $repos);
+  is( pop @{$ruser->refs}, catfile($repos, 'references/PhiX/default/all/bwa0_6/phix-illumina.fa'),
     'phix reference for lane 4');
   is( $ruser->messages->count, 0, 'no messages' );
 }
@@ -145,27 +145,27 @@ use_ok('npg_tracking::data::reference');
 
 {
   my $ruser = npg_tracking::data::reference->new(id_run => 4254, position => 1, repository => $repos);
-  my $refpath = catfile($repos, 'references/Streptococcus_pneumoniae/ATCC_700669/all/bwa/S_pneumoniae_700669.fasta');
+  my $refpath = catfile($repos, 'references/Streptococcus_pneumoniae/ATCC_700669/all/bwa0_6/S_pneumoniae_700669.fasta');
   is ((scalar @{$ruser->refs()}), 0, 'number of ref returned for a multiplex sample');
 }
 
 {
   my $ruser = npg_tracking::data::reference->new(
-    id_run => 5175, position => 1, tag_index => 1, repository => $repos, aligner => 'bwa');
-  my $refpath =  catfile($repos, 'references/Bordetella_bronchiseptica/RB50/all/bwa/ref.fa');
+    id_run => 5175, position => 1, tag_index => 1, repository => $repos, aligner => 'bwa0_6');
+  my $refpath =  catfile($repos, 'references/Bordetella_bronchiseptica/RB50/all/bwa0_6/ref.fa');
 
   is (pop @{$ruser->refs()}, $refpath, 'ref_genome ref');
 
   my $ref_info =  $ruser->ref_info;
   isa_ok($ref_info, 'npg_tracking::data::reference::info');
   is ($ref_info->ref_path, $refpath, 'refpath field');
-  is ($ref_info->aligner, q[bwa], 'aligner field');
+  is ($ref_info->aligner, q[bwa0_6], 'aligner field');
   is ($ref_info->aligner_options, q{}, 'empty aligner options, use bwa default');
 }
 
 {
 
-  my $phix = join q[/], $repos, q[references/PhiX/default/all/bwa/phix-illumina.fa];
+  my $phix = join q[/], $repos, q[references/PhiX/default/all/bwa0_6/phix-illumina.fa];
 
   my $ruser = npg_tracking::data::reference->new(
                          repository => $repos,
@@ -175,6 +175,7 @@ use_ok('npg_tracking::data::reference');
 
   $ruser = npg_tracking::data::reference->new(
                          repository => $repos,
+                         aligner    => q[bwa0_6],
                          id_run     => 4254,
                          position   => 8,
                          for_spike  => 1     );
@@ -184,6 +185,7 @@ use_ok('npg_tracking::data::reference');
 
   $ruser = npg_tracking::data::reference->new(
                          repository => $repos,
+                         aligner    => q[bwa0_6],
                          id_run     => 6993,
                          position   => 8,
                          tag_index  => 168   );
@@ -197,6 +199,7 @@ use_ok('npg_tracking::data::reference');
 
   $ruser = npg_tracking::data::reference->new(
                          repository => $repos,
+                         aligner    => q[bwa0_6],
                          id_run     => 4140,
                          position   => 8,
                          for_spike  => 1     );
@@ -215,13 +218,18 @@ use_ok('npg_tracking::data::reference');
     'Bordetella reference via rpt_list');
 
   $ruser = npg_tracking::data::reference->new(
+    rpt_list => '6993:8:168', repository => $repos, aligner => q[fasta]);
+  @refs = sort @{$ruser->refs()};
+  is( scalar @refs, 1, 'one path returned');
+  is( shift @refs, catfile($repos, $pref),
+    'PhiX reference via rpt_list');
+
+  $ruser = npg_tracking::data::reference->new(
     rpt_list => '5175:1:1;6993:8:168', repository => $repos, aligner => q[fasta]);
   @refs = sort @{$ruser->refs()};
-  is( scalar @refs, 2, 'two paths returned');
+  is( scalar @refs, 1, 'one path returned');
   is( shift @refs, catfile($repos, $bref),
     'Bordetella reference via rpt_list');
-  is( pop @refs, catfile($repos, $pref),
-    'phix reference via rpt_list');
 }
 
 {

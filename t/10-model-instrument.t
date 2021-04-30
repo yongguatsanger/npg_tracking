@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 use t::util;
-use Test::More tests => 119;
+use Test::More tests => 125;
 use Test::Deep;
 use Test::Exception;
 
@@ -107,6 +107,8 @@ my $util = t::util->new({ fixtures => 1 });
   isa_ok($current_instruments, 'ARRAY', '$model->current_instruments()');
   is((scalar@{$current_instruments} + 1), scalar@{$instruments}, 'scalar@{$model->current_instruments()} is 1 less than scalar@{$model->instruments()}');
   is($model->current_instruments(), $current_instruments, '$model->current_instruments() cached ok');
+  is($model->manufacturer_name, undef,
+    'manufacturer name is undefined for a model used in list context');
 }
 
 {
@@ -139,8 +141,7 @@ my $util = t::util->new({ fixtures => 1 });
   isa_ok($current_run, 'npg::model::run', '$model->current_run()');
   is($model->current_run(), $current_run, '$model->current_run() cached ok');
   is($model->model(), 'HK', '$model->model() retrieved correctly');
-  is($model->id_manufacturer(), 10, '$model->id_manufacturer() retrieved correctly');
-  isa_ok($model->manufacturer(), 'npg::model::manufacturer', '$model->id_manufacturer()');
+  is($model->manufacturer_name(), 'Illumina', 'correct manufacturer name');
 
   my @desigs;
   foreach my $i ( @{$model->designations()} ) {
@@ -380,6 +381,26 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a fr
   is(join(q[,], @{$model->possible_next_statuses4status('wash in progress')}),
     'wash performed,planned repair,planned service,down for repair', 
     'possible_next_statuses for "wash in progress" called as an object method');
+}
+
+{
+  my $model = npg::model::instrument->new({
+             util          => $util,
+             id_instrument => 4,
+            });
+  my $recent_is = $model->recent_instrument_statuses();
+  isa_ok($recent_is, 'ARRAY');
+  ok (!@{$recent_is}, 'no statuses within last year');
+  is( scalar @{$model->instrument_statuses()}, 2, 'two statuses in total');
+
+  lives_ok { $model->status_reset('wash required') } 'new status added';
+
+  $model = npg::model::instrument->new({
+             util          => $util,
+             id_instrument => 4,
+            });
+  is( scalar @{$model->recent_instrument_statuses()}, 1, 'one recent status');
+  is (scalar @{$model->instrument_statuses()}, 3, 'number of statuses in total');
 }
 
 1;

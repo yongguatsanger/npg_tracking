@@ -1,7 +1,3 @@
-#########
-# Author:        jo3
-# Created:       2010-04-28
-
 package Monitor::Roles::Cycle;
 
 use Moose::Role;
@@ -20,14 +16,6 @@ sub get_latest_cycle {
     my $status_latest = 0;
     if ( $self->can( q{runfolder_path} ) ) {
       $run_path ||= $self->runfolder_path();
-    }
-    my $status_xml = "$run_path/Data/reports/StatusUpdate.xml";
-    if ( -e $status_xml ) {
-        my $status_text = slurp($status_xml);
-
-        if ( $status_text =~ m{ <ImgCycle> (\d+) </ImgCycle> }msx ) {
-            $status_latest = $1;
-        }
     }
 
     $self->_cycle_numbers( $run_path, 1 );
@@ -84,20 +72,45 @@ sub _cycle_numbers {
 
   # We assume that there will always be a lane 1 here. So far this has been
   # safe.
-  my @cycle_dirs = glob $run_path . '/Data/Intensities/L001/C*';
-  if ( ! @cycle_dirs ) { # fallback when no cifs copied
-    @cycle_dirs = glob $run_path . '/Data/Intensities/BaseCalls/L001/C*';
+  my @thumbnail_dirs = glob $run_path . '/Thumbnail_Images/L001/C*';
+  my @img_cycle_dirs = map { ( $_ =~ m{ L001/C (\d+) [.]1 $}gmsx ) } @thumbnail_dirs;
+
+  my @intensities_dirs = glob $run_path . '/Data/Intensities/L001/C*';
+  my @cycle_dirs = map { ( $_ =~ m{ L001/C (\d+) [.]1 $}gmsx ) } @intensities_dirs;
+  if ( ! @cycle_dirs) { # fallback when no cifs copied
+    @intensities_dirs = glob $run_path . '/Data/Intensities/BaseCalls/L001/C*';
+    @cycle_dirs = map { ( $_ =~ m{ L001/C (\d+) [.]1 $}gmsx ) } @intensities_dirs;
   }
 
-  my @cycle_numbers =
-        map { ( $_ =~ m{ L001/C (\d+) [.]1 $}gmsx ) } @cycle_dirs;
+  if ( scalar @img_cycle_dirs > scalar @cycle_dirs ) {
+    @cycle_dirs = @img_cycle_dirs;
+  }
 
   # guarantee that we return found cycles in numerical order
-  @cycle_numbers = sort { (sprintf q{%04d}, $a) <=> (sprintf q{%04d}, $b) } @cycle_numbers;
+  my @cycle_numbers = sort { (sprintf q{%04d}, $a) <=> (sprintf q{%04d}, $b) } @cycle_dirs;
 
   $self->{_cycle_numbers}->{$run_path} = \@cycle_numbers;
 
   return @{ $self->{_cycle_numbers}->{$run_path} };
+}
+
+sub delay {
+  my ( $self ) = @_;
+
+  my $run_actual_cycles = $self->tracking_run()->actual_cycle_count();
+
+  my $latest_cycle = $self->get_latest_cycle();
+
+  my $delay = 0;
+
+  if ( $run_actual_cycles != $latest_cycle ) {
+    $delay = $run_actual_cycles - $latest_cycle;
+    $delay =~ s/-//xms;
+  }
+
+  $delay += scalar $self->missing_cycles();
+
+  return $delay;
 }
 
 1;
@@ -139,6 +152,11 @@ Goes through all the cycle directories present for lane 1, and then returns any 
 
   my @MissingCycles = $oClass->missing_cycles( $run_path );
 
+=head2 delay
+
+The number of cycles that are delayed coming across from the instrument
+actual last cycle recorded - highest cycle found on staging
+
 =head1 CONFIGURATION AND ENVIRONMENT
 
 =head1 DEPENDENCIES
@@ -155,11 +173,7 @@ Goes through all the cycle directories present for lane 1, and then returns any 
 
 =back
 
-
-
 =head1 INCOMPATIBILITIES
-
-Do not use with Monitor::IlluminaSRS::FTP
 
 =head1 BUGS AND LIMITATIONS
 
@@ -167,11 +181,12 @@ We assume that there will always be a lane 1.
 
 =head1 AUTHOR
 
-John O'Brien, E<lt>jo3@sanger.ac.ukE<gt>
+John O'Brien
+Marina Gourtovaia
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2010 GRL, by John O'Brien
+Copyright (C) 2013,2014,2015,2018,2019,2020 Genome Research Ltd.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

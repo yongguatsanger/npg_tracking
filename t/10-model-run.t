@@ -1,114 +1,122 @@
 use strict;
 use warnings;
-use t::util;
-use npg::model::instrument;
-use npg::model::user;
-use npg::model::annotation;
-use Test::More tests => 124;
+use Test::More tests => 90;
 use Test::Exception;
+use t::util;
+use t::instrument;
 
 use_ok('npg::model::run');
+use_ok ('npg::model::instrument');
+use_ok ('npg::model::user');
+use_ok ('npg::model::annotation');
 
 # using fixtures to import data
-#
-my $util  = t::util->new({
-                fixtures  => 1,
-            });
-my $model = npg::model::run->new({
-                util => $util
-            });
+my $util  = t::util->new({fixtures  => 1});
 
-########
-# first tests are on model object that is not actually linked to a run
-#
-isa_ok($model, 'npg::model::run', '$model');
-my @fields = $model->fields();
-is((scalar @fields), 13, '$model->fields() size');
+subtest 'model object that is not linked to a run' => sub {
+  plan tests => 7;
 
-isa_ok( $model->potentially_stuck_runs(), q{HASH}, q{potentially_stuck_runs} );
+  my $model = npg::model::run->new({util => $util});
+  isa_ok($model, 'npg::model::run');
+  my @fields = $model->fields();
+  is((scalar @fields), 13, '$model->fields() size');
 
-my ($whole_v, $point_v) = $model->_parse_version('2.01');
-is($whole_v, 2, 'correct whole version number for 2.01');
-is($point_v, 1, 'correct point version number for 2.01');
+  isa_ok( $model->potentially_stuck_runs(), q{HASH}, q{potentially_stuck_runs} );
 
-($whole_v, $point_v) = $model->_parse_version('2');
-is($whole_v, 2, 'correct whole version number for 2');
-is($point_v, 0, 'correct point version number for 2');
+  is($model->name(), 'UNKNOWN_0000', 'unknown name if no instrument name and no id_run');
 
-($whole_v, $point_v) = $model->_parse_version('0.01');
-is($whole_v, 0, 'correct whole version number for 0.01');
-is($point_v, 1, 'correct point version number for 0.01');
+  is($model->attach_annotation('test annotation'), 1, '$model->attach_annotation() with annotation, but no $model->id_run()');
+  is($model->{annotations}->[0], 'test annotation', 'annotation appended to annotations array within $model');
+  is($model->id_user(), undef, 'id_user not found by model or current run status');
+};
 
-throws_ok {($whole_v, $point_v) = $model->_parse_version('dfasdf');} qr{Given version number is not valid:}, 'no valid version given';
+subtest 'runs on batch' => sub {
+  plan tests => 23;
 
-is($model->_cmp_version('2.01', '2.8'), -1, 'version 2.01 less than 2.8');
-is($model->_cmp_version('2.10', '2.8'), 1, 'version 2.10 greater than 2.8');
-is($model->_cmp_version('2.8', '2.8'), 0, 'version 2.8 equals to 2.8');
+  my $model = npg::model::run->new({util => $util});
 
-my $runs_on_batch = $model->runs_on_batch();
-isa_ok($runs_on_batch, 'ARRAY', '$model->runs_on_batch()');
-is(scalar@{$runs_on_batch}, 0, '$model->runs_on_batch() is empty');
-$runs_on_batch = $model->runs_on_batch(10);
-isa_ok($runs_on_batch, 'ARRAY', '$model->runs_on_batch(10)');
-is($model->runs_on_batch(10), $runs_on_batch, '$model->runs_on_batch(10) cached ok');
+  throws_ok { $model->runs_on_batch('batch') } qr/Invalid batch id \'batch\'/,
+    'error if batch id argument is a string';
+  throws_ok { $model->runs_on_batch(3.5) } qr/Invalid batch id \'3.5\'/,
+    'error if batch id argument is a float';
+  throws_ok { $model->runs_on_batch(-5) } qr/Invalid negative or zero batch id \'-5\'/,
+    'error if batch id argument is a negative integer';
+  throws_ok { $model->runs_on_batch(0) } qr/Invalid negative or zero batch id \'0\'/,
+    'error if batch id argument is zero';
 
-my $runs = $model->runs();
-isa_ok($runs, 'ARRAY', '$model->runs()');
+  my $runs_on_batch = $model->runs_on_batch();
+  isa_ok($runs_on_batch, 'ARRAY', 'runs_on_batch returns an array');
+  is(scalar@{$runs_on_batch}, 0, 'no runs listed since no batch associated with this run');
 
-my $run = $runs->[-1];
-isa_ok($run, 'npg::model::run', 'last of $model->runs()');
+  $runs_on_batch = $model->runs_on_batch(10);
+  is(scalar@{$runs_on_batch}, 0, 'no runs listed since no runs are associated with batch 10');
 
+  $runs_on_batch = $model->runs_on_batch(939);
+  is(scalar @{$runs_on_batch}, 1, 'one run is associated wiht batch 939');
+  my $run = $runs_on_batch->[0];
+  isa_ok($run, 'npg::model::run');
+  is($run->id_run, 1, 'correct run id');
+  ok (! (exists $model->{runs_on_batch}), 'result is not cached');
 
-my $name = $model;
-is($name->name(), 'UNKNOWN_00000', 'unknown name if no instrument name and no id_run - default');
+  $runs_on_batch = $model->runs_on_batch(10000);
+  is(scalar@{$runs_on_batch}, 2, 'two runs are associated wiht batch 10000');
+  $run = $runs_on_batch->[0];
+  isa_ok($run, 'npg::model::run');
+  is($run->id_run, 9950, 'correct run id');
+  $run = $runs_on_batch->[1];
+  isa_ok($run, 'npg::model::run');
+  is($run->id_run, 9951, 'correct run id');
 
-$model->instrument_format->model('HK');
-is($name->name(), 'UNKNOWN_0000', 'unknown name if no instrument name and no id_run - HK model');
+  $model = npg::model::run->new({util => $util, id_run => 9949});
+  is ($model->batch_id, 9999, 'batch id of this run');
+  is($model->runs_on_batch(939)->[0]->id_run, 1,
+    'correct result when quering on a different batch');
+  is($model->runs_on_batch()->[0]->id_run, 9949,
+    'correct result when quering without argument');
 
-$model->{scs28} = 1;
-is($name->name(), 'UNKNOWN_00000', 'unknown name if no instrument name and no id_run - HK model, scs28 mod');
+  $model = npg::model::run->new({util => $util, id_run => 9951});
+  is ($model->batch_id, 10000, 'batch id of this run');
+  is($model->runs_on_batch(939)->[0]->id_run, 1,
+    'correct result when quering on a different batch');
+  is($model->runs_on_batch()->[0]->id_run, 9950,
+    'correct result when quering without argument - first run');
+  is($model->runs_on_batch()->[1]->id_run, 9951,
+    'correct result when quering without argument - second run'); 
+};
 
+subtest 'listing runs' => sub {
+  plan tests => 6;
 
-is($model->attach_annotation('test annotation'), 1, '$model->attach_annotation() with annotation, but no $model->id_run()');
-is($model->{annotations}->[0], 'test annotation', 'annotation appended to annotations array within $model');
-is($model->id_user(), undef, 'id_user not found by model or current run status');
+  my $model = npg::model::run->new({util => $util});
+  my $runs = $model->runs();
+  isa_ok($runs, 'ARRAY', '$model->runs()');
 
-#########
-#  now begin testing on model object which is a run, using first one obtained above
-# (if runs are added to the fixtures the results can change, so use $got to
-# make updating the tests a little easier)
-{
-   my $run2 = $runs->[1];
-   my $got = $run2->id_run;
-   is($got, 9950, 'correct id_run for the 2nd run');
-   ok(!$run2->scs28(), "run $got not with scs 2.8 or above");
-   is($run2->name(), 'HS1_09950', "correct run name for run $got");
+  my $run = $runs->[-1];
+  isa_ok($run, 'npg::model::run', 'last of $model->runs()');
+
+  my $run2 = $runs->[1];
+  my $got = $run2->id_run;
+  is($got, 9950, 'correct id_run for the 2nd run');
+  is($run2->name(), 'HS1_9950', "correct run name for run $got");
    
-   $run2 = $runs->[9];
-   $got = $run2->id_run;
-   is($got, 15, 'correct id_run for the 10th run');
-   ok($run2->scs28(), "run $got with scs 2.8 or above");
-   is($run2->name(), 'IL10_00015', "correct run name for run $got");
-}
+  $run2 = $runs->[9];
+  $got = $run2->id_run;
+  is($got, 15, 'correct id_run for the 10th run');
+  is($run2->name(), 'IL10_0015', "correct run name for run $got");
+};
 
 {
-  my $runs_on_batch = $run->runs_on_batch();
-  isnt($runs_on_batch->[0], undef, '$run->runs_on_batch() has found some runs');
+  my $model = npg::model::run->new({util => $util});  
+  my $runs = $model->runs();
+  my $run = $runs->[-1];
 
-  my $loader_info = $run->loader_info();
-  isa_ok($loader_info, 'HASH', '$run->loader_info()');
-  is($run->loader_info(), $loader_info, 'loader_info cached');
-  is($loader_info->{loader}, 'joe_admin', 'loader name ok');
-  is($loader_info->{date}, '2007-06-05', 'loading date ok');
   my $instrument = $run->instrument();
   isa_ok($instrument, 'npg::model::instrument', '$run->instrument()');
-  $run->loader_info(1)->{date} = '2010-05-28 10:20:00';
-  ok($run->scs28, 'this run is on instrument with scs 2.8');
 
   my $name = $run->name();
-  is($name, 'IL1_00001', 'name generated ok from instrument name and id_run');
+  is($name, 'IL1_0001', 'name generated ok from instrument name and id_run');
   my $run_folder = $run->run_folder();
-  is($run_folder, '070605_IL1_00001', 'run_folder generated ok from loading date, instrument name and id_run');
+  is($run_folder, '070605_IL1_0001', 'run_folder generated ok from loading date, instrument name and id_run');
   my $flowcell_id = $run->flowcell_id();
   is($flowcell_id, undef, 'flowcell_id is not defined');
   my $tags = $run->tags();
@@ -142,21 +150,6 @@ is($model->id_user(), undef, 'id_user not found by model or current run status')
   $util->requestor('public');
   my $annotation = npg::model::annotation->new({util => $util, id_annotation => 1});
   is($run->attach_annotation($annotation), 1, 'attach_annotation successful');
-  my $recent_runs = $run->recent_runs();
-  isa_ok($recent_runs, 'ARRAY', '$run->recent_runs()');
-  is($run->recent_runs(), $recent_runs, 'recent_runs cached');
-  is($recent_runs->[0], undef, 'no recent runs');
-  $run->{recent_runs} = undef;
-  my $recent_mirrored_runs = $run->recent_mirrored_runs();
-  isa_ok($recent_mirrored_runs, 'ARRAY', '$run->recent_mirrored_runs()');
-  is($run->recent_mirrored_runs(), $recent_mirrored_runs, 'recent_mirrored_runs cached');
-  is($recent_mirrored_runs->[0], undef, 'no recent mirrored runs');
-  $run->{recent_mirrored_runs} = undef;
-  $run->{'days'} = '4000';
-  $recent_runs = $run->recent_runs();
-  ok($recent_runs->[0], 'recent runs found');
-  $recent_mirrored_runs = $run->recent_mirrored_runs();
-  ok($recent_mirrored_runs->[0], 'recent mirrored runs found');
 
   is($run->id_user(), 1, '$run->id_user() got from current run status');
   is($run->id_user(5), 5, 'id_user set by $run->id_user(5)');
@@ -201,7 +194,7 @@ is($model->id_user(), undef, 'id_user not found by model or current run status')
 {
   my $model = npg::model::run->new({
             util                 => $util,
-            batch_id             => 939,
+            batch_id             => 1939,
             id_instrument        => 3,
             expected_cycle_count => 35,
             priority             => 1,
@@ -229,7 +222,7 @@ is($model->id_user(), undef, 'id_user not found by model or current run status')
 {
   my $model = npg::model::run->new({
             util                 => $util,
-            batch_id             => 939,
+            batch_id             => 10939,
             id_instrument        => 3,
             expected_cycle_count => 35,
             actual_cycle_count   => 10,
@@ -290,7 +283,7 @@ is($model->id_user(), undef, 'id_user not found by model or current run status')
 {
   my $model = npg::model::run->new({
 				    util                 => $util,
-				    batch_id             => 939,
+				    batch_id             => 5939,
 				    id_instrument        => 3,
 				    expected_cycle_count => 35,
 				    priority             => 1,
@@ -305,7 +298,7 @@ is($model->id_user(), undef, 'id_user not found by model or current run status')
 
   my $run1 = npg::model::run->new({
            util                 => $util,
-           batch_id             => 939,
+           batch_id             => 2939,
            id_instrument        => 3,
            expected_cycle_count => 35,
            priority             => 1,
@@ -317,7 +310,7 @@ is($model->id_user(), undef, 'id_user not found by model or current run status')
   my $run2 = npg::model::run->new({
            util                 => $util,
            id_run_pair          => $run1->id_run(),
-           batch_id             => 939,
+           batch_id             => 3939,
            id_instrument        => 3,
            expected_cycle_count => 35,
            priority             => 1,
@@ -344,7 +337,7 @@ is($model->id_user(), undef, 'id_user not found by model or current run status')
   my $run3 = npg::model::run->new({
            util                 => $util,
            id_run_pair          => $run1->id_run(),
-           batch_id             => 939,
+           batch_id             => 4939,
            id_instrument        => 3,
            expected_cycle_count => 35,
            priority             => 1,
@@ -403,7 +396,7 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a ne
 {
   my $model = npg::model::run->new({
             util                 => $util,
-            batch_id             => 939,
+            batch_id             => 6939,
             id_instrument        => 64,
             expected_cycle_count => 35,
             actual_cycle_count   => 10,
@@ -415,13 +408,13 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a ne
            });
   lives_ok { $model->create(); } 'created run ok - fc_slotA tag passed';
   ok($model->has_tag_with_value('fc_slotA'), 'run has fc_slotA tag');
-  cmp_ok($model->run_folder, 'eq', DateTime->now()->strftime(q(%y%m%d)).'_HS3_09952_A', 'HiSeq run folder');
+  cmp_ok($model->run_folder, 'eq', DateTime->now()->strftime(q(%y%m%d)).'_HS3_9952_A', 'HiSeq run folder');
 }
 
 {
   my $model = npg::model::run->new({
             util                 => $util,
-            batch_id             => 939,
+            batch_id             => 7939,
             id_instrument        => 64,
             expected_cycle_count => 35,
             actual_cycle_count   => 10,
@@ -435,13 +428,13 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a ne
            });
   lives_ok { $model->create(); } 'created run ok - fc_slotB tag passed';
   ok($model->has_tag_with_value('fc_slotB'), 'run has fc_slotB tag');
-  cmp_ok($model->run_folder, 'eq', DateTime->now()->strftime(q(%y%m%d)).'_HS3_09953_B_20353ABXX', 'HiSeq run folder');
+  cmp_ok($model->run_folder, 'eq', DateTime->now()->strftime(q(%y%m%d)).'_HS3_9953_B_20353ABXX', 'HiSeq run folder');
 }
 
 {
   my $model = npg::model::run->new({
             util                 => $util,
-            batch_id             => 939,
+            batch_id             => 8939,
             id_instrument        => 64,
             expected_cycle_count => 35,
             actual_cycle_count   => 10,
@@ -477,5 +470,180 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a ne
   ok($m->is_dev, 'dev run');
 }
 
+subtest 'check for batch duplication' => sub {
+   plan tests => 14;
+
+   my $model = npg::model::run->new({util => $util});
+   throws_ok { $model->is_batch_duplicate() }
+     qr/Batch id should be given/, 'no argument - error';
+   ok(!$model->is_batch_duplicate(0), 'zero - not a duplicate');
+   ok(!$model->is_batch_duplicate(q[]), 'empty string - not a duplicate');
+
+   my $batch_id = 9999901;
+   my $run = npg::model::run->new({
+            util                 => $util,
+            batch_id             => $batch_id,
+            id_instrument        => 3,
+            expected_cycle_count => 35,
+            is_paired            => 1,
+            priority             => 1,
+            team                 => 'RAD',
+            id_user              => $util->requestor->id_user(),
+            flowcell_id          => 'FC' . $batch_id
+   });
+   $run->create();
+   my $id_run = $run->id_run;
+
+   is($run->current_run_status->run_status_dict->description,
+    'run pending', 'new run is active');
+   ok($model->is_batch_duplicate($batch_id), 'duplicate detected');
+
+   $util->dbh->do("UPDATE run_status SET iscurrent=0 WHERE id_run=$id_run");
+   $util->dbh->commit;
+   $model = npg::model::run->new({util => $util});
+   my @runs = grep { $_->id_run == $id_run } @{$model->runs()};
+   ok ($runs[0]->batch_id == $batch_id, 'correct run found');
+   is ($runs[0]->current_run_status->run_status_dict->description,
+     undef, 'no current run status');
+   ok($model->is_batch_duplicate($batch_id), 'duplicate detected');
+  
+   my $query = "SELECT id_run_status_dict FROM run_status_dict WHERE description = ?";
+   my $sth = $util->dbh->prepare($query); 
+   for my $d (('run cancelled', 'run stopped early')) {
+     $sth->execute($d);
+     my @row = $sth->fetchrow_array;
+     my $id_dict = $row[0];
+     $util->dbh->do(
+       "UPDATE run_status SET iscurrent=1, id_run_status_dict=$id_dict WHERE id_run=$id_run");
+     my $m = npg::model::run->new({util => $util});
+     my @rs = grep { $_->id_run == $id_run } @{$m->runs()};
+     ok ($rs[0]->batch_id == $batch_id, 'correct run found');
+     is ($rs[0]->current_run_status->run_status_dict->description,
+       $d, "current run status is '$d'");
+     ok(!$m->is_batch_duplicate($batch_id), 'no batch duplication');
+   }
+};
+
+subtest 'run creation error due to problems with batch id' => sub {
+   plan tests => 12;
+
+   my $h = {
+     util                 => $util,
+     id_instrument        => 3,
+     expected_cycle_count => 35,
+     is_paired            => 1,
+     priority             => 1,
+     team                 => 'RAD',
+     id_user              => $util->requestor->id_user()
+   };
+
+   my %ref = %{$h};
+   lives_ok { npg::model::run->new(\%ref)->create() }
+     'run with no batch id can always be created';
+   
+   %ref = %{$h};
+   $ref{batch_id} = q[];
+   lives_ok { npg::model::run->new(\%ref)->create() }
+     'run with an empty string batch id can always be created';
+
+   %ref = %{$h};
+   $ref{batch_id} = 0;
+   lives_ok { npg::model::run->new(\%ref)->create() }
+     'run with zero batch id can always be created';
+
+   %ref = %{$h};
+   $ref{batch_id} = 'some';
+   throws_ok { npg::model::run->new(\%ref)->create() }
+     qr/Invalid batch id \'some\'/,
+     'run with non-empty string batch id cannot be created';
+
+   my $batch_id = 9999902;
+   %ref = %{$h};
+   $ref{batch_id} = $batch_id;
+   my $run = npg::model::run->new(\%ref);
+   lives_ok { $run->create() }
+     'run with yet unused integer batch id can be created';
+   my $id_run = $run->id_run;
+
+   %ref = %{$h};
+   $ref{batch_id} = $batch_id;
+   throws_ok { npg::model::run->new(\%ref)->create() }
+     qr/Batch $batch_id might have been already used for an active run/,
+     'second run with the same batch id cannot be created';
+
+   my $query =
+     "SELECT id_run_status_dict FROM run_status_dict WHERE description = ?";
+   my $sth = $util->dbh->prepare($query);
+   $sth->execute('run cancelled');
+   my @row = $sth->fetchrow_array;
+   my $id_dict = $row[0];
+   $util->dbh->do(
+     "UPDATE run_status SET id_run_status_dict=$id_dict WHERE id_run=$id_run");
+   
+   %ref = %{$h};
+   $ref{batch_id} = $batch_id;
+   my $run_next = npg::model::run->new(\%ref);
+   lives_ok { $run_next->create() } 'can create a run with previously used batch id ' .
+    'if the previous run is cancelled';
+   my $id_run_next = $run_next->id_run;
+   ok ($id_run_next != $id_run, 'a different run is created');
+
+   %ref = %{$h};
+   $ref{batch_id} = $batch_id;
+   throws_ok { npg::model::run->new(\%ref)->create() }
+     qr/Batch $batch_id might have been already used for an active run/,
+     'third run with the same batch id cannot be created  while one of the ' .
+     'previous runs is active';
+
+   $sth->execute('run stopped early');
+   @row = $sth->fetchrow_array;
+   $id_dict = $row[0];
+   $util->dbh->do(
+     "UPDATE run_status SET id_run_status_dict=$id_dict WHERE id_run=$id_run_next");
+   
+   %ref = %{$h};
+   $ref{batch_id} = $batch_id;
+   my $run_next_next = npg::model::run->new(\%ref);
+   lives_ok { $run_next_next->create() } 'can create a run with previously used batch id ' .
+    'if the previous runs are inactive';
+   my $id_run_next_next = $run_next_next->id_run;
+   ok ($id_run_next_next != $id_run, 'a different run is created');
+   ok ($id_run_next_next != $id_run_next, 'a different run is created');
+};
+{
+  my $model = npg::model::run->new({});
+  dies_ok{ $model->get_instruments }, "Accessing undefined instruments ArrayRef fails";
+
+  $model = npg::model::run->new({
+    instruments => \(t::instrument->new(name => "NV1")),
+  });
+  lives_ok{ $model->get_instruments }, "Accessing defined instruments ArrayRef succeeds";
+}
+
+{
+	#               0    1   2    3    4   5    6   7    8     9   10   11  12   13   14     15  16    17   18   19   20
+	my @names = (qw{NV74 HX1 NV21 HX57 MS6 NV78 NV9 HS57 cbot5 HX3 HF59 MS3 HF55 MS32 cbot45 NV2 cbot3 HS20 MS82 HX11 HX5},
+		#  21   22   23    24   25     26  27   28   29  30  31    32   33   34   35   36   37  38  39     40   41  42   43
+		qw{MS86 NV79 cbot9 HX25 cbot49 HF5 HX67 NV10 MS8 HX4 cbot1 MS62 MS47 MS18 MS49 NV15 HX9 HF1 cbot13 MS59 HS5 MS72 NV1});
+
+	my @order = (43, 15, 6, 28, 36, 2, 0, 5, 22, 31, 16, 8, 23, 39, 14, 25, 38, 26, 12, 10, 41, 17, 7, 1, 9, 30, 20, 37,
+		19, 24, 3, 27, 11, 4, 29, 34, 13, 33, 35, 40, 32, 42, 18, 21);
+
+	my @instruments;
+	foreach my $name (@names){
+		push @instruments, t::instrument->new(name => "$name");
+	}
+
+	my @ordered_instruments;
+	foreach my $position (@order){
+		push @ordered_instruments, $instruments[$position];
+	}
+
+  my $model = npg::model::run->new({
+    instruments => \@instruments,
+  });
+
+  is_deeply($model->sort_instruments($model->get_instruments), \@ordered_instruments, "Instrument dropdown for run;add sorted");
+}
 1;
 
